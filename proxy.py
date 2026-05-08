@@ -53,7 +53,7 @@ def get_orders():
     orders = profile.get('orders', [])
 
     # 2. Оставляем только активные (status != 2)
-    active_orders = [o for o in orders if o.get('status') != 2]
+    active_orders = [o for o in orders if o.get('status') == 0]
 
     # 3. Берём последние три (самые свежие)
     last_orders = active_orders[-3:] if len(active_orders) >= 3 else active_orders
