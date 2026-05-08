@@ -11,7 +11,7 @@ REES46_SHOP_SECRET = "79dbfb33e1534843d0a3b0b3730b55a1"
 REES46_PROFILE_URL = "https://api.rees46.ru/profile"
 CRM_STATUS_URL_TEMPLATE = "https://crm.florcat.ru/ajax/getStatusLinks.php?order_id={order_id}"
 
-# Прокси для MAX (уже работает)
+# 1. Прокси для MAX — принимает запросы от ChatApp и перенаправляет в MAX API
 @app.route('/', methods=['POST'])
 def proxy_to_max():
     body = request.get_json()
@@ -31,7 +31,7 @@ def proxy_to_max():
     resp = requests.post(MAX_API_URL, headers=headers, json=payload)
     return jsonify(resp.json()), resp.status_code
 
-# Новый маршрут для получения активных заказов
+# 2. Получение активных заказов (только статус 0, последние три)
 @app.route('/get-orders', methods=['POST'])
 def get_orders():
     data = request.get_json()
@@ -39,7 +39,6 @@ def get_orders():
     if not phone:
         return jsonify({'error': 'phone is required'}), 400
 
-    # 1. Запрашиваем профиль из REES46
     params = {
         'shop_id': REES46_SHOP_ID,
         'shop_secret': REES46_SHOP_SECRET,
@@ -49,16 +48,10 @@ def get_orders():
     if resp.status_code != 200:
         return jsonify({'error': 'REES46 API error'}), 500
 
-    profile = resp.json()
-    orders = profile.get('orders', [])
-
-    # 2. Оставляем только активные (status != 2)
+    orders = resp.json().get('orders', [])
     active_orders = [o for o in orders if o.get('status') == 0]
-
-    # 3. Берём последние три (самые свежие)
     last_orders = active_orders[-3:] if len(active_orders) >= 3 else active_orders
 
-    # 4. Формируем ответ
     result = {}
     for i, order in enumerate(last_orders):
         idx = i + 1
@@ -66,7 +59,6 @@ def get_orders():
         result[f'order{idx}_id'] = order_id
         result[f'order{idx}_status'] = order.get('status')
         result[f'order{idx}_value'] = order.get('value')
-        # 5. Запрашиваем статусную страницу из CRM для каждого заказа
         try:
             crm_resp = requests.get(CRM_STATUS_URL_TEMPLATE.format(order_id=order_id))
             if crm_resp.status_code == 200:
@@ -78,7 +70,15 @@ def get_orders():
 
     return jsonify(result)
 
-# Health-check для поддержания сервера в активном состоянии
+# 3. Очистка user_id от префикса private-
+@app.route('/clean-user-id', methods=['POST'])
+def clean_user_id():
+    data = request.get_json()
+    raw_id = data.get('user_id', '')
+    clean = raw_id.replace('private-', '').replace('group-', '')
+    return jsonify({'user_id': clean})
+
+# 4. Health-check для UptimeRobot
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok'})
