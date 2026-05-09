@@ -1,6 +1,8 @@
 from flask import Flask, request, jsonify
+from PIL import Image
 import requests
 import json
+import io
 
 app = Flask(__name__)
 
@@ -40,7 +42,7 @@ def proxy_to_max():
     return jsonify(resp.json()), resp.status_code
 
 # ------------------------------------------------------------
-# 2. УНИВЕРСАЛЬНЫЙ ПРОКСИ ДЛЯ TELEGRAM (автоопределение метода)
+# 2. УНИВЕРСАЛЬНЫЙ ПРОКСИ ДЛЯ TELEGRAM (автоопределение метода + конвертация в JPEG)
 # ------------------------------------------------------------
 @app.route('/telegram', methods=['POST'])
 def proxy_telegram_auto():
@@ -79,9 +81,14 @@ def proxy_telegram_auto():
             try:
                 image_resp = requests.get(photo_url, stream=True)
                 image_resp.raise_for_status()
-                files = {
-                    'photo': ('image.png', image_resp.raw, 'image/png')
-                }
+
+                # Конвертация изображения в JPEG (убираем альфа-канал, если есть)
+                img = Image.open(image_resp.raw)
+                img = img.convert('RGB')
+                buf = io.BytesIO()
+                img.save(buf, format='JPEG', quality=85)
+                buf.seek(0)
+                files = {'photo': ('image.jpg', buf, 'image/jpeg')}
                 data_payload = {
                     'chat_id': (None, chat_id),
                     'caption': (None, caption or ''),
@@ -92,7 +99,7 @@ def proxy_telegram_auto():
 
                 resp = requests.post(f"{TG_API_URL}/sendPhoto", files=files, data=data_payload)
             except Exception as e:
-                return jsonify({'status': 'error', 'message': f'Failed to download photo: {e}'}), 500
+                return jsonify({'status': 'error', 'message': f'Failed to download or convert photo: {e}'}), 500
         else:
             payload['photo'] = photo
             payload['caption'] = caption or ''
