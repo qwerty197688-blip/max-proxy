@@ -79,16 +79,15 @@ def proxy_telegram_auto():
     elif method == 'sendPhoto':
         if photo_url:
             try:
-                image_resp = requests.get(photo_url, stream=True)
+                image_resp = requests.get(photo_url)
                 image_resp.raise_for_status()
 
-                # Конвертация изображения в JPEG (убираем альфа-канал, если есть)
-                img = Image.open(image_resp.raw)
-                img = img.convert('RGB')
-                buf = io.BytesIO()
-                img.save(buf, format='JPEG', quality=85)
-                buf.seek(0)
-                files = {'photo': ('image.jpg', buf, 'image/jpeg')}
+                # Определяем MIME-тип от сервера или используем запасной
+                content_type = image_resp.headers.get('Content-Type', 'application/octet-stream')
+                # Просто передаём сырые байты в Telegram
+                files = {
+                    'photo': ('image.png', image_resp.content, content_type)
+                }
                 data_payload = {
                     'chat_id': (None, chat_id),
                     'caption': (None, caption or ''),
@@ -99,7 +98,7 @@ def proxy_telegram_auto():
 
                 resp = requests.post(f"{TG_API_URL}/sendPhoto", files=files, data=data_payload)
             except Exception as e:
-                return jsonify({'status': 'error', 'message': f'Failed to download or convert photo: {e}'}), 500
+                return jsonify({'status': 'error', 'message': f'Failed to download or send photo: {e}'}), 500
         else:
             payload['photo'] = photo
             payload['caption'] = caption or ''
