@@ -1,8 +1,9 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 import requests
 
 app = Flask(__name__)
 
+# === КОНФИГУРАЦИЯ ===
 MAX_TOKEN = "f9LHodD0cOL6sWUqALeE0TV5VXVb6YSUZoNnbUt0sBRwEbz-36An-XyiP6rC959ZSEpEY7tpmjqrDZBe6ew8"
 MAX_API_URL = "https://platform-api.max.ru/messages"
 
@@ -11,7 +12,22 @@ REES46_SHOP_SECRET = "79dbfb33e1534843d0a3b0b3730b55a1"
 REES46_PROFILE_URL = "https://api.rees46.ru/profile"
 CRM_STATUS_URL_TEMPLATE = "https://crm.florcat.ru/ajax/getStatusLinks.php?order_id={order_id}"
 
-# 1. Прокси для MAX
+# ------------------------------------------------------------
+# ИГРА — раздача статических файлов
+# ------------------------------------------------------------
+@app.route('/game')
+def serve_game():
+    """Отдаёт HTML-игру"""
+    return send_from_directory('static', 'index.html')
+
+@app.route('/static/<path:filename>')
+def serve_static(filename):
+    """Отдаёт PNG‑спрайты и другие ресурсы игры"""
+    return send_from_directory('static', filename)
+
+# ------------------------------------------------------------
+# 1. ПРОКСИ ДЛЯ MAX — принимает запросы от ChatApp и отправляет в MAX API
+# ------------------------------------------------------------
 @app.route('/', methods=['POST'])
 def proxy_to_max():
     body = request.get_json()
@@ -19,6 +35,7 @@ def proxy_to_max():
     if not user_id:
         return jsonify({'status': 'error', 'message': 'user_id is required'}), 400
 
+    # Убираем префикс private- (и group- на всякий случай)
     if user_id.startswith('private-') or user_id.startswith('group-'):
         user_id = user_id.split('-', 1)[1]
 
@@ -31,7 +48,9 @@ def proxy_to_max():
     resp = requests.post(MAX_API_URL, headers=headers, json=payload)
     return jsonify(resp.json()), resp.status_code
 
-# 2. Активные заказы (статус 0)
+# ------------------------------------------------------------
+# 2. АКТИВНЫЕ ЗАКАЗЫ (статус = 0) — для кнопки «Отследить заказ»
+# ------------------------------------------------------------
 @app.route('/get-orders', methods=['POST'])
 def get_orders():
     data = request.get_json()
@@ -59,6 +78,7 @@ def get_orders():
         result[f'order{idx}_id'] = order_id
         result[f'order{idx}_status'] = order.get('status')
         result[f'order{idx}_value'] = order.get('value')
+        # Получаем статусную страницу из CRM
         try:
             crm_resp = requests.get(CRM_STATUS_URL_TEMPLATE.format(order_id=order_id))
             if crm_resp.status_code == 200:
@@ -70,7 +90,9 @@ def get_orders():
 
     return jsonify(result)
 
-# 3. История заказов (любой статус)
+# ------------------------------------------------------------
+# 3. ИСТОРИЯ ЗАКАЗОВ (любой статус, последние 3) — для «История заказов»
+# ------------------------------------------------------------
 @app.route('/get-order-history', methods=['POST'])
 def get_order_history():
     data = request.get_json()
@@ -99,7 +121,9 @@ def get_order_history():
 
     return jsonify(result)
 
-# 4. Очистка user_id
+# ------------------------------------------------------------
+# 4. ОЧИСТКА USER_ID — убираем префикс private- для передачи в REES46
+# ------------------------------------------------------------
 @app.route('/clean-user-id', methods=['POST'])
 def clean_user_id():
     data = request.get_json()
@@ -107,10 +131,13 @@ def clean_user_id():
     clean = raw_id.replace('private-', '').replace('group-', '')
     return jsonify({'user_id': clean})
 
-# 5. Health-check
+# ------------------------------------------------------------
+# 5. HEALTH‑CHECK — для UptimeRobot, чтобы сервер не «засыпал»
+# ------------------------------------------------------------
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok'})
 
+# ------------------------------------------------------------
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
