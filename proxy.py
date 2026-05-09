@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify
 import requests
 
 app = Flask(__name__)
@@ -7,23 +7,14 @@ app = Flask(__name__)
 MAX_TOKEN = "f9LHodD0cOL6sWUqALeE0TV5VXVb6YSUZoNnbUt0sBRwEbz-36An-XyiP6rC959ZSEpEY7tpmjqrDZBe6ew8"
 MAX_API_URL = "https://platform-api.max.ru/messages"
 
+# Токен Telegram-бота (указан второй токен, при необходимости замените)
+TG_BOT_TOKEN = "5256656259:AAG1kdCp0eqps84AZLsD1PcrzxmXaDRMg04"
+TG_API_URL = f"https://api.telegram.org/bot{TG_BOT_TOKEN}"
+
 REES46_SHOP_ID = "094c1d1542d01e13bf851001c5f814"
 REES46_SHOP_SECRET = "79dbfb33e1534843d0a3b0b3730b55a1"
 REES46_PROFILE_URL = "https://api.rees46.ru/profile"
 CRM_STATUS_URL_TEMPLATE = "https://crm.florcat.ru/ajax/getStatusLinks.php?order_id={order_id}"
-
-# ------------------------------------------------------------
-# ИГРА — раздача статических файлов
-# ------------------------------------------------------------
-@app.route('/game')
-def serve_game():
-    """Отдаёт HTML-игру"""
-    return send_from_directory('static', 'index.html')
-
-@app.route('/static/<path:filename>')
-def serve_static(filename):
-    """Отдаёт PNG‑спрайты и другие ресурсы игры"""
-    return send_from_directory('static', filename)
 
 # ------------------------------------------------------------
 # 1. ПРОКСИ ДЛЯ MAX — принимает запросы от ChatApp и отправляет в MAX API
@@ -49,7 +40,23 @@ def proxy_to_max():
     return jsonify(resp.json()), resp.status_code
 
 # ------------------------------------------------------------
-# 2. АКТИВНЫЕ ЗАКАЗЫ (статус = 0) — для кнопки «Отследить заказ»
+# 2. ПРОКСИ ДЛЯ TELEGRAM (новый маршрут)
+# ------------------------------------------------------------
+@app.route('/send-to-telegram', methods=['POST'])
+def proxy_to_telegram():
+    data = request.get_json()
+    method = data.get('method')
+    payload = data.get('payload', {})
+
+    if not method:
+        return jsonify({'status': 'error', 'message': 'method is required'}), 400
+
+    url = f"{TG_API_URL}/{method}"
+    resp = requests.post(url, json=payload)
+    return jsonify(resp.json()), resp.status_code
+
+# ------------------------------------------------------------
+# 3. АКТИВНЫЕ ЗАКАЗЫ (статус = 0) — для кнопки «Отследить заказ»
 # ------------------------------------------------------------
 @app.route('/get-orders', methods=['POST'])
 def get_orders():
@@ -91,7 +98,7 @@ def get_orders():
     return jsonify(result)
 
 # ------------------------------------------------------------
-# 3. ИСТОРИЯ ЗАКАЗОВ (любой статус, последние 3) — для «История заказов»
+# 4. ИСТОРИЯ ЗАКАЗОВ (любой статус, последние 3) — для «История заказов»
 # ------------------------------------------------------------
 @app.route('/get-order-history', methods=['POST'])
 def get_order_history():
@@ -122,7 +129,7 @@ def get_order_history():
     return jsonify(result)
 
 # ------------------------------------------------------------
-# 4. ОЧИСТКА USER_ID — убираем префикс private- для передачи в REES46
+# 5. ОЧИСТКА USER_ID — убираем префикс private- для передачи в REES46
 # ------------------------------------------------------------
 @app.route('/clean-user-id', methods=['POST'])
 def clean_user_id():
@@ -132,7 +139,7 @@ def clean_user_id():
     return jsonify({'user_id': clean})
 
 # ------------------------------------------------------------
-# 5. HEALTH‑CHECK — для UptimeRobot, чтобы сервер не «засыпал»
+# 6. HEALTH‑CHECK — для UptimeRobot, чтобы сервер не «засыпал»
 # ------------------------------------------------------------
 @app.route('/health', methods=['GET'])
 def health():
