@@ -11,7 +11,7 @@ REES46_SHOP_SECRET = "79dbfb33e1534843d0a3b0b3730b55a1"
 REES46_PROFILE_URL = "https://api.rees46.ru/profile"
 CRM_STATUS_URL_TEMPLATE = "https://crm.florcat.ru/ajax/getStatusLinks.php?order_id={order_id}"
 
-# 1. Прокси для MAX — принимает запросы от ChatApp и перенаправляет в MAX API
+# 1. Прокси для MAX
 @app.route('/', methods=['POST'])
 def proxy_to_max():
     body = request.get_json()
@@ -31,7 +31,7 @@ def proxy_to_max():
     resp = requests.post(MAX_API_URL, headers=headers, json=payload)
     return jsonify(resp.json()), resp.status_code
 
-# 2. Получение активных заказов (только статус 0, последние три)
+# 2. Активные заказы (статус 0)
 @app.route('/get-orders', methods=['POST'])
 def get_orders():
     data = request.get_json()
@@ -70,7 +70,36 @@ def get_orders():
 
     return jsonify(result)
 
-# 3. Очистка user_id от префикса private-
+# 3. История заказов (любой статус)
+@app.route('/get-order-history', methods=['POST'])
+def get_order_history():
+    data = request.get_json()
+    phone = data.get('phone')
+    if not phone:
+        return jsonify({'error': 'phone is required'}), 400
+
+    params = {
+        'shop_id': REES46_SHOP_ID,
+        'shop_secret': REES46_SHOP_SECRET,
+        'phone': phone
+    }
+    resp = requests.get(REES46_PROFILE_URL, params=params)
+    if resp.status_code != 200:
+        return jsonify({'error': 'REES46 API error'}), 500
+
+    orders = resp.json().get('orders', [])
+    last_orders = orders[-3:] if len(orders) >= 3 else orders
+
+    result = {}
+    for i, order in enumerate(last_orders):
+        idx = i + 1
+        result[f'hist_order{idx}_id'] = order.get('id')
+        result[f'hist_order{idx}_status'] = order.get('status')
+        result[f'hist_order{idx}_value'] = order.get('value')
+
+    return jsonify(result)
+
+# 4. Очистка user_id
 @app.route('/clean-user-id', methods=['POST'])
 def clean_user_id():
     data = request.get_json()
@@ -78,7 +107,7 @@ def clean_user_id():
     clean = raw_id.replace('private-', '').replace('group-', '')
     return jsonify({'user_id': clean})
 
-# 4. Health-check для UptimeRobot
+# 5. Health-check
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok'})
