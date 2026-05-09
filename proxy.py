@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 import requests
+import json
 
 app = Flask(__name__)
 
@@ -7,7 +8,7 @@ app = Flask(__name__)
 MAX_TOKEN = "f9LHodD0cOL6sWUqALeE0TV5VXVb6YSUZoNnbUt0sBRwEbz-36An-XyiP6rC959ZSEpEY7tpmjqrDZBe6ew8"
 MAX_API_URL = "https://platform-api.max.ru/messages"
 
-# Токен Telegram-бота (указан второй токен, при необходимости замените)
+# Токен Telegram-бота
 TG_BOT_TOKEN = "5256656259:AAG1kdCp0eqps84AZLsD1PcrzxmXaDRMg04"
 TG_API_URL = f"https://api.telegram.org/bot{TG_BOT_TOKEN}"
 
@@ -17,7 +18,7 @@ REES46_PROFILE_URL = "https://api.rees46.ru/profile"
 CRM_STATUS_URL_TEMPLATE = "https://crm.florcat.ru/ajax/getStatusLinks.php?order_id={order_id}"
 
 # ------------------------------------------------------------
-# 1. ПРОКСИ ДЛЯ MAX — принимает запросы от ChatApp и отправляет в MAX API
+# 1. ПРОКСИ ДЛЯ MAX
 # ------------------------------------------------------------
 @app.route('/', methods=['POST'])
 def proxy_to_max():
@@ -26,7 +27,6 @@ def proxy_to_max():
     if not user_id:
         return jsonify({'status': 'error', 'message': 'user_id is required'}), 400
 
-    # Убираем префикс private- (и group- на всякий случай)
     if user_id.startswith('private-') or user_id.startswith('group-'):
         user_id = user_id.split('-', 1)[1]
 
@@ -40,23 +40,77 @@ def proxy_to_max():
     return jsonify(resp.json()), resp.status_code
 
 # ------------------------------------------------------------
-# 2. ПРОКСИ ДЛЯ TELEGRAM (новый маршрут)
+# 2. УНИВЕРСАЛЬНЫЙ ПРОКСИ ДЛЯ TELEGRAM (автоопределение метода)
 # ------------------------------------------------------------
-@app.route('/send-to-telegram', methods=['POST'])
-def proxy_to_telegram():
+@app.route('/telegram', methods=['POST'])
+def proxy_telegram_auto():
     data = request.get_json()
-    method = data.get('method')
-    payload = data.get('payload', {})
 
+    # Определяем метод
+    method = data.get('method')          # можно явно указать
+    photo_url = data.get('photo_url')    # ссылка на фото, которое нужно скачать
+    photo = data.get('photo')            # прямая ссылка на фото (для sendPhoto)
+    text = data.get('text')
+    caption = data.get('caption')
+    chat_id = data.get('chat_id')
+    reply_markup = data.get('reply_markup')
+    parse_mode = data.get('parse_mode', 'Markdown')
+
+    if not chat_id:
+        return jsonify({'status': 'error', 'message': 'chat_id is required'}), 400
+
+    # Если метод не указан явно, определяем автоматически
     if not method:
-        return jsonify({'status': 'error', 'message': 'method is required'}), 400
+        if photo_url or photo:
+            method = 'sendPhoto'
+        else:
+            method = 'sendMessage'
 
-    url = f"{TG_API_URL}/{method}"
-    resp = requests.post(url, json=payload)
+    # Собираем общие параметры
+    payload = {
+        'chat_id': chat_id,
+        'parse_mode': parse_mode,
+        'reply_markup': json.dumps(reply_markup) if reply_markup else None
+    }
+
+    # Обработка для sendMessage
+    if method == 'sendMessage':
+        payload['text'] = text or caption or ''
+        resp = requests.post(f"{TG_API_URL}/sendMessage", json=payload)
+
+    # Обработка для sendPhoto (скачивание через сервер, если photo_url)
+    elif method == 'sendPhoto':
+        # Если есть photo_url – скачиваем изображение
+        if photo_url:
+            try:
+                image_resp = requests.get(photo_url, stream=True)
+                image_resp.raise_for_status()
+                files = {
+                    'photo': ('image.png', image_resp.raw, 'image/png')
+                }
+                # Добавляем остальные поля как data (не JSON, а form-data)
+                data_payload = {
+                    'chat_id': (None, chat_id),
+                    'caption': (None, caption or ''),
+                    'parse_mode': (None, parse_mode),
+                    'reply_markup': (None, json.dumps(reply_markup) if reply_markup else '')
+                }
+                resp = requests.post(f"{TG_API_URL}/sendPhoto", files=files, data=data_payload)
+            except Exception as e:
+                return jsonify({'status': 'error', 'message': f'Failed to download photo: {e}'}), 500
+        else:
+            # Обычная отправка по прямой ссылке
+            payload['photo'] = photo
+            payload['caption'] = caption or ''
+            resp = requests.post(f"{TG_API_URL}/sendPhoto", json=payload)
+
+    else:
+        return jsonify({'status': 'error', 'message': f'Unsupported method: {method}'}), 400
+
     return jsonify(resp.json()), resp.status_code
 
 # ------------------------------------------------------------
-# 3. АКТИВНЫЕ ЗАКАЗЫ (статус = 0) — для кнопки «Отследить заказ»
+# 3. АКТИВНЫЕ ЗАКАЗЫ (статус = 0)
 # ------------------------------------------------------------
 @app.route('/get-orders', methods=['POST'])
 def get_orders():
@@ -85,7 +139,6 @@ def get_orders():
         result[f'order{idx}_id'] = order_id
         result[f'order{idx}_status'] = order.get('status')
         result[f'order{idx}_value'] = order.get('value')
-        # Получаем статусную страницу из CRM
         try:
             crm_resp = requests.get(CRM_STATUS_URL_TEMPLATE.format(order_id=order_id))
             if crm_resp.status_code == 200:
@@ -98,7 +151,7 @@ def get_orders():
     return jsonify(result)
 
 # ------------------------------------------------------------
-# 4. ИСТОРИЯ ЗАКАЗОВ (любой статус, последние 3) — для «История заказов»
+# 4. ИСТОРИЯ ЗАКАЗОВ (любой статус, последние 3)
 # ------------------------------------------------------------
 @app.route('/get-order-history', methods=['POST'])
 def get_order_history():
@@ -129,7 +182,7 @@ def get_order_history():
     return jsonify(result)
 
 # ------------------------------------------------------------
-# 5. ОЧИСТКА USER_ID — убираем префикс private- для передачи в REES46
+# 5. ОЧИСТКА USER_ID
 # ------------------------------------------------------------
 @app.route('/clean-user-id', methods=['POST'])
 def clean_user_id():
@@ -139,7 +192,7 @@ def clean_user_id():
     return jsonify({'user_id': clean})
 
 # ------------------------------------------------------------
-# 6. HEALTH‑CHECK — для UptimeRobot, чтобы сервер не «засыпал»
+# 6. HEALTH‑CHECK
 # ------------------------------------------------------------
 @app.route('/health', methods=['GET'])
 def health():
