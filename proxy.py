@@ -336,4 +336,8 @@ def fetch_events_manual():
 
 # ------------------------------------------------------------
 if __name__ == '__main__':
+    # При старте сразу обрабатываем накопившиеся события
+    print(">>> Initial event processing...")
+    processed = process_events()
+    print(f">>> Initially processed {processed} events")
     app.run(host='0.0.0.0', port=5000)
