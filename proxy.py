@@ -165,11 +165,14 @@ def process_events():
 
 def auto_fetch():
     """Фоновая задача: каждые 10 секунд опрашивает события."""
+    print(">>> Auto-fetch thread started")
     while True:
         try:
-            process_events()
+            processed = process_events()
+            if processed > 0:
+                print(f">>> Auto-fetch processed {processed} events")
         except Exception as e:
-            app.logger.error(f"Auto fetch error: {e}")
+            print(f">>> Auto-fetch error: {e}")
         time.sleep(10)
 
 # ------------------------------------------------------------
@@ -339,7 +342,6 @@ def parse_start():
 def health():
     return jsonify({'status': 'ok'})
 
-# Ручной вызов fetch-events (для отладки)
 @app.route('/fetch-events', methods=['POST', 'GET'])
 def fetch_events_manual():
     processed = process_events()
