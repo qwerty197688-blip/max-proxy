@@ -300,16 +300,29 @@ def is_technical_message(text):
 
 @app.route('/bitrix-filter', methods=['POST'])
 def bitrix_filter():
-    # Пробуем получить данные как JSON
+    # Сохраняем сырое тело для диагностики
+    raw_body = request.get_data(as_text=True)
+    with open('/tmp/bitrix_body.log', 'a') as f:
+        f.write(f"=== {request.content_type} ===\n{raw_body}\n\n")
+
+    # Пробуем JSON
     data = request.get_json(silent=True)
     if data is None:
-        # Если не JSON – берём form data
         data = request.form.to_dict()
 
-    # Логируем для контроля
+    # Логируем в консоль
     app.logger.info("=== BITRIX FILTER RECEIVED ===")
     app.logger.info("Content-Type: %s", request.content_type)
     app.logger.info("Data: %s", json.dumps(data, ensure_ascii=False))
+
+    # Если данные не получены, возвращаем ошибку с превью сырого тела
+    if not data:
+        return jsonify({
+            "status": "error",
+            "message": "No parseable data",
+            "content_type": request.content_type,
+            "raw_preview": raw_body[:200]
+        }), 400
 
     # Извлекаем текст сообщения
     text = ''
@@ -322,16 +335,23 @@ def bitrix_filter():
         else:
             text = data.get('text', '')
 
-    # Извлекаем chat_id
+    # Извлекаем chat_id (внутренний ID открытой линии, если есть)
     chat_id = ''
-    if 'data[chat][id]' in data:
+    if isinstance(data, dict) and 'chat_id' in data:
+        chat_id = data['chat_id']
+    elif 'data[chat][id]' in data:
         chat_id = data['data[chat][id]']
-    elif isinstance(data, dict):
-        chat = data.get('chat', data.get('data', {}).get('chat', {}))
+    elif isinstance(data, dict) and 'chat' in data and isinstance(data['chat'], dict):
+        chat_id = data['chat'].get('id', '')
+    elif isinstance(data, dict) and 'data' in data and isinstance(data['data'], dict):
+        chat = data['data'].get('chat', {})
         if isinstance(chat, dict):
             chat_id = chat.get('id', '')
-        else:
-            chat_id = data.get('chat_id', '')
+
+    # Извлекаем user_id (альтернативный идентификатор для ChatApp)
+    user_id = ''
+    if isinstance(data, dict):
+        user_id = data.get('user_id', data.get('id_chat', ''))
 
     # Извлекаем телефон (если передан)
     phone = ''
@@ -340,9 +360,9 @@ def bitrix_filter():
     elif isinstance(data, dict):
         phone = data.get('phone', data.get('client', {}).get('phone', ''))
 
-    # Если нет chat_id – просто выходим
-    if not chat_id:
-        return jsonify({"status": "error", "message": "chat_id missing"}), 400
+    # Если нет ни chat_id, ни user_id – возвращаем ошибку
+    if not chat_id and not user_id:
+        return jsonify({"status": "error", "message": "chat_id or user_id missing"}), 400
 
     clean_phone = normalize_phone(phone)
     contact_id = get_contact_by_phone(clean_phone) if clean_phone else None
@@ -353,27 +373,34 @@ def bitrix_filter():
 
     is_tech = is_technical_message(text)
 
-    # Применяем логику
-    if contact_id and active:
-        transfer_to_operator(chat_id)
-        return jsonify({"status": "ok", "action": "open", "reason": "active_deals"})
+    # --- Логика для вебхука Битрикс24 (управляем сессией) ---
+    if chat_id:
+        if contact_id and active:
+            transfer_to_operator(chat_id)
+            return jsonify({"status": "ok", "action": "open", "reason": "active_deals"})
 
-    if contact_id and not active:
+        if contact_id and not active:
+            if is_tech:
+                finish_session(chat_id)
+                return jsonify({"status": "ok", "action": "finish", "reason": "tech_no_active"})
+            else:
+                create_lead_and_attach(contact_id, clean_phone)
+                transfer_to_operator(chat_id)
+                return jsonify({"status": "ok", "action": "open", "lead_created": True})
+
+        # Нет контакта
         if is_tech:
             finish_session(chat_id)
-            return jsonify({"status": "ok", "action": "finish", "reason": "tech_no_active"})
+            return jsonify({"status": "ok", "action": "finish", "reason": "tech_no_contact"})
         else:
-            create_lead_and_attach(contact_id, clean_phone)
             transfer_to_operator(chat_id)
-            return jsonify({"status": "ok", "action": "open", "lead_created": True})
+            return jsonify({"status": "ok", "action": "open", "reason": "no_contact"})
 
-    # Нет контакта
+    # --- Логика для вызова из ChatApp (только анализируем) ---
     if is_tech:
-        finish_session(chat_id)
-        return jsonify({"status": "ok", "action": "finish", "reason": "tech_no_contact"})
+        return jsonify({"status": "ok", "action": "finish", "reason": "tech"})
     else:
-        transfer_to_operator(chat_id)
-        return jsonify({"status": "ok", "action": "open", "reason": "no_contact"})
+        return jsonify({"status": "ok", "action": "open", "reason": "normal"})
 
 # ------------------------------------------------------------
 if __name__ == '__main__':
