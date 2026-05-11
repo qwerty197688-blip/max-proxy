@@ -305,10 +305,6 @@ def is_technical_message(text):
 # ------------------------------------------------------------
 @app.route('/fetch-events', methods=['POST', 'GET'])
 def fetch_events():
-    """
-    Забирает накопленные события бота через imbot.v2.Event.get
-    и сразу применяет логику фильтрации.
-    """
     global last_offset
     params = {
         "botId": BOT_ID,
@@ -322,33 +318,38 @@ def fetch_events():
     processed = 0
 
     for event in events:
-        if event.get("type") == "ONIMBOTV2MESSAGEADD":
-            data = event.get("data", {})
-            text = data.get("message", {}).get("text", "")
-            chat_id = data.get("chat", {}).get("id", "")
-            if not chat_id:
-                continue
+        if event.get("type") != "ONIMBOTV2MESSAGEADD":
+            continue
 
-            phone = data.get("user", {}).get("phones", {}).get("personal_mobile", "")
-            clean_phone = normalize_phone(phone)
-            contact_id = get_contact_by_phone(clean_phone) if clean_phone else None
+        data = event.get("data", {})
+        text = data.get("message", {}).get("text", "")
+        chat_id = data.get("chat", {}).get("id", "")
 
-            is_tech = is_technical_message(text)
+        if not chat_id:
+            continue
 
-            if is_tech:
-                finish_session(chat_id)
-            else:
-                if contact_id:
-                    if has_active_deals_or_leads(contact_id):
-                        transfer_to_operator(chat_id)
-                    else:
-                        create_lead_and_attach(contact_id, clean_phone)
-                        transfer_to_operator(chat_id)
-                else:
+        phone = data.get("user", {}).get("phones", {}).get("personal_mobile", "")
+        clean_phone = normalize_phone(phone)
+        contact_id = get_contact_by_phone(clean_phone) if clean_phone else None
+        is_tech = is_technical_message(text)
+
+        # Диагностика
+        app.logger.info(f"TEXT: {text} | TECH: {is_tech} | CHAT_ID: {chat_id}")
+
+        if is_tech:
+            result = finish_session(chat_id)
+            app.logger.info(f"FINISH RESULT: {result}")
+        else:
+            if contact_id:
+                if has_active_deals_or_leads(contact_id):
                     transfer_to_operator(chat_id)
-            processed += 1
+                else:
+                    create_lead_and_attach(contact_id, clean_phone)
+                    transfer_to_operator(chat_id)
+            else:
+                transfer_to_operator(chat_id)
+        processed += 1
 
-    # Сохраняем offset для следующего вызова
     if resp.get("result", {}).get("nextOffset"):
         last_offset = resp["result"]["nextOffset"]
 
