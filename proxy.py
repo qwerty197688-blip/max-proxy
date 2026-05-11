@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import requests
 import json
+import re
 
 app = Flask(__name__)
 
@@ -16,6 +17,10 @@ REES46_SHOP_ID = "094c1d1542d01e13bf851001c5f814"
 REES46_SHOP_SECRET = "79dbfb33e1534843d0a3b0b3730b55a1"
 REES46_PROFILE_URL = "https://api.rees46.ru/profile"
 CRM_STATUS_URL_TEMPLATE = "https://crm.florcat.ru/ajax/getStatusLinks.php?order_id={order_id}"
+
+# Токен приложения Битрикс24 (для /bitrix-filter)
+BITRIX_APP_TOKEN = "b9fp5vcfojoxdq2yl8a0r51gkgas7zz0"
+BITRIX_REST_URL = "https://crm.florcat.ru/rest"
 
 # ------------------------------------------------------------
 # 1. ПРОКСИ ДЛЯ MAX
@@ -201,6 +206,135 @@ def parse_start():
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok'})
+
+# ------------------------------------------------------------
+# 8. ФИЛЬТР СООБЩЕНИЙ ДЛЯ БИТРИКС24 (БОТ-ФИЛЬТР)
+# ------------------------------------------------------------
+def call_bitrix(method, params={}):
+    """Вызов метода REST API Битрикс24 через токен приложения"""
+    url = f"{BITRIX_REST_URL}/{method}?auth={BITRIX_APP_TOKEN}"
+    resp = requests.post(url, json=params)
+    return resp.json()
+
+def normalize_phone(phone):
+    if not phone:
+        return ''
+    digits = re.sub(r'[^\d]', '', phone)
+    if len(digits) == 11 and digits.startswith(('7', '8')):
+        return '7' + digits[1:]
+    elif len(digits) == 10:
+        return '7' + digits
+    return digits
+
+def get_contact_by_phone(phone):
+    clean = normalize_phone(phone)
+    if not clean:
+        return None
+    search_tail = clean[-10:]
+    result = call_bitrix("crm.contact.list", {
+        "filter": {"%=PHONE": search_tail},
+        "select": ["ID"]
+    })
+    contacts = result.get("result", [])
+    return contacts[0]["ID"] if contacts else None
+
+def has_active_deals_or_leads(contact_id):
+    # Проверяем сделки (стадия не финальная)
+    deals = call_bitrix("crm.deal.list", {
+        "filter": {"CONTACT_ID": contact_id, "!STAGE_SEMANTIC_ID": "F"},
+        "select": ["ID"]
+    })
+    if deals.get("result"):
+        return True
+
+    # Проверяем лиды (статус не финальный)
+    leads = call_bitrix("crm.lead.list", {
+        "filter": {"CONTACT_ID": contact_id, "!STATUS_SEMANTIC_ID": "F"},
+        "select": ["ID"]
+    })
+    return len(leads.get("result", [])) > 0
+
+def finish_session(chat_id):
+    return call_bitrix("imopenlines.bot.session.finish", {
+        "CHAT_ID": chat_id
+    })
+
+def transfer_to_operator(chat_id):
+    return call_bitrix("imopenlines.bot.session.operator", {
+        "CHAT_ID": chat_id
+    })
+
+def create_lead_and_attach(contact_id, phone, source="Telegram"):
+    """Создать лид и привязать к контакту"""
+    lead = call_bitrix("crm.lead.add", {
+        "fields": {
+            "TITLE": f"Обращение из {source}",
+            "CONTACT_ID": contact_id,
+            "SOURCE_ID": source,
+            "COMMENTS": f"Телефон: {phone}"
+        }
+    })
+    return lead.get("result")
+
+def is_technical_message(text):
+    if not text:
+        return False
+    tech_phrases = [
+        "/start",
+        "📱 Меню",
+        "📍 Отследить заказ",
+        "💐 Каталог",
+        "👤 Личный кабинет",
+        "❓ Соединить с оператором",
+        "🔙 Назад",
+        "💰 Баланс бонусов",
+        "📋 История заказов"
+    ]
+    text_clean = text.strip()
+    for phrase in tech_phrases:
+        if text_clean == phrase:
+            return True
+    return False
+
+@app.route('/bitrix-filter', methods=['POST'])
+def bitrix_filter():
+    data = request.get_json()
+    # Пытаемся извлечь данные из разных форматов (чат-бот Битрикс24 / ChatApp)
+    message = data.get('message', data.get('data', {}).get('message', {}))
+    text = message.get('text', '') if isinstance(message, dict) else ''
+    chat_id = data.get('chat_id', data.get('data', {}).get('chat', {}).get('id', ''))
+    phone = data.get('phone', data.get('client', {}).get('phone', ''))
+
+    clean_phone = normalize_phone(phone)
+    contact_id = get_contact_by_phone(clean_phone) if clean_phone else None
+
+    active = False
+    if contact_id:
+        active = has_active_deals_or_leads(contact_id)
+
+    is_tech = is_technical_message(text)
+
+    # --- Логика принятия решений ---
+    if contact_id and active:
+        transfer_to_operator(chat_id)
+        return jsonify({"status": "ok", "action": "open", "reason": "active_deals"})
+
+    if contact_id and not active:
+        if is_tech:
+            finish_session(chat_id)
+            return jsonify({"status": "ok", "action": "finish", "reason": "tech_no_active"})
+        else:
+            create_lead_and_attach(contact_id, clean_phone)
+            transfer_to_operator(chat_id)
+            return jsonify({"status": "ok", "action": "open", "lead_created": True})
+
+    # Нет контакта (телефон не опознан или не передан)
+    if is_tech:
+        finish_session(chat_id)
+        return jsonify({"status": "ok", "action": "finish", "reason": "tech_no_contact"})
+    else:
+        transfer_to_operator(chat_id)
+        return jsonify({"status": "ok", "action": "open", "reason": "no_contact"})
 
 # ------------------------------------------------------------
 if __name__ == '__main__':
