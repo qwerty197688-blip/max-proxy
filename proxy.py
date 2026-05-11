@@ -18,8 +18,6 @@ REES46_PROFILE_URL = "https://api.rees46.ru/profile"
 CRM_STATUS_URL_TEMPLATE = "https://crm.florcat.ru/ajax/getStatusLinks.php?order_id={order_id}"
 
 BITRIX_WEBHOOK = "b8c8m2bw9pzik7ep"
-BITRIX_CLIENT_ID = "q4s0wy624a1p99qwlta98lu3ih0fjgq7"
-
 BOT_ID = 164097
 BOT_TOKEN = "a7b3c9d4e5f6789012345678abcdef01"
 
@@ -30,8 +28,9 @@ last_offset = 0
 # ------------------------------------------------------------
 def call_bitrix(method, params={}):
     url = f"https://crm.florcat.ru/rest/1/{BITRIX_WEBHOOK}/{method}"
-    if "botToken" not in params and BOT_TOKEN:
-        params["botToken"] = BOT_TOKEN
+    # Всегда добавляем botToken (он же CLIENT_ID для v2)
+    if "CLIENT_ID" not in params and BOT_TOKEN:
+        params["CLIENT_ID"] = BOT_TOKEN
     resp = requests.post(url, json=params)
     return resp.json()
 
@@ -73,14 +72,12 @@ def has_active_deals_or_leads(contact_id):
 
 def finish_session(chat_id):
     return call_bitrix("imopenlines.bot.session.finish", {
-        "CHAT_ID": chat_id,
-        "BOT_ID": BITRIX_CLIENT_ID
+        "CHAT_ID": chat_id
     })
 
 def transfer_to_operator(chat_id):
     return call_bitrix("imopenlines.bot.session.operator", {
-        "CHAT_ID": chat_id,
-        "BOT_ID": BITRIX_CLIENT_ID
+        "CHAT_ID": chat_id
     })
 
 def create_lead_and_attach(contact_id, phone, source="Telegram"):
@@ -129,6 +126,7 @@ def process_events():
 
     events = resp.get("result", {}).get("events", [])
     processed = 0
+    details = []  # Для диагностики
 
     for event in events:
         if event.get("type") == "ONIMBOTV2MESSAGEADD":
@@ -144,23 +142,21 @@ def process_events():
 
             is_tech = is_technical_message(text)
 
+            detail = {"text": text, "chat_id": chat_id, "is_tech": is_tech}
             if is_tech:
-                finish_session(chat_id)
+                finish_res = finish_session(chat_id)
+                detail["action"] = "finish"
+                detail["finish_result"] = finish_res
             else:
-                if contact_id:
-                    if has_active_deals_or_leads(contact_id):
-                        transfer_to_operator(chat_id)
-                    else:
-                        create_lead_and_attach(contact_id, clean_phone)
-                        transfer_to_operator(chat_id)
-                else:
-                    transfer_to_operator(chat_id)
+                transfer_to_operator(chat_id)
+                detail["action"] = "transfer"
+            details.append(detail)
             processed += 1
 
     if resp.get("result", {}).get("nextOffset"):
         last_offset = resp["result"]["nextOffset"]
 
-    return processed
+    return processed, details
 
 # ------------------------------------------------------------
 # МАРШРУТЫ
@@ -331,13 +327,16 @@ def health():
 
 @app.route('/fetch-events', methods=['POST', 'GET'])
 def fetch_events_manual():
-    processed = process_events()
-    return jsonify({"status": "ok", "processed": processed})
+    processed, details = process_events()
+    return jsonify({"status": "ok", "processed": processed, "details": details})
 
 # ------------------------------------------------------------
 if __name__ == '__main__':
     # При старте сразу обрабатываем накопившиеся события
     print(">>> Initial event processing...")
-    processed = process_events()
+    processed, details = process_events()
     print(f">>> Initially processed {processed} events")
+    if details:
+        for d in details:
+            print(f"    {d['text']} -> {d['action']} (chat {d['chat_id']})")
     app.run(host='0.0.0.0', port=5000)
