@@ -9,7 +9,6 @@ app = Flask(__name__)
 MAX_TOKEN = "f9LHodD0cOL6sWUqALeE0TV5VXVb6YSUZoNnbUt0sBRwEbz-36An-XyiP6rC959ZSEpEY7tpmjqrDZBe6ew8"
 MAX_API_URL = "https://platform-api.max.ru/messages"
 
-# Токен Telegram-бота (FlorcatBot)
 TG_BOT_TOKEN = "5256656259:AAG1kdCp0eqps84AZLsD1PcrzxmXaDRMg04"
 TG_API_URL = f"https://api.telegram.org/bot{TG_BOT_TOKEN}"
 
@@ -18,10 +17,13 @@ REES46_SHOP_SECRET = "79dbfb33e1534843d0a3b0b3730b55a1"
 REES46_PROFILE_URL = "https://api.rees46.ru/profile"
 CRM_STATUS_URL_TEMPLATE = "https://crm.florcat.ru/ajax/getStatusLinks.php?order_id={order_id}"
 
-# Токен приложения Битрикс24 и CLIENT_ID бота-фильтра
 BITRIX_APP_TOKEN = "sza7gi6khrvx18cr0eipcb0z6puepwob"
 BITRIX_CLIENT_ID = "q4s0wy624a1p99qwlta98lu3ih0fjgq7"
 BITRIX_REST_URL = "https://crm.florcat.ru/rest"
+
+# ID бота и его токен (используются для fetch-режима)
+BOT_ID = 164097
+BOT_TOKEN = "a7b3c9d4e5f6789012345678abcdef01"
 
 # ------------------------------------------------------------
 # 1. ПРОКСИ ДЛЯ MAX
@@ -190,7 +192,7 @@ def clean_user_id():
     return jsonify({'user_id': clean})
 
 # ------------------------------------------------------------
-# 6. ПАРСИНГ DEEP LINK (извлечение start-параметра)
+# 6. ПАРСИНГ DEEP LINK
 # ------------------------------------------------------------
 @app.route('/parse-start', methods=['POST'])
 def parse_start():
@@ -209,10 +211,9 @@ def health():
     return jsonify({'status': 'ok'})
 
 # ------------------------------------------------------------
-# 8. ФИЛЬТР СООБЩЕНИЙ ДЛЯ БИТРИКС24 (БОТ-ФИЛЬТР) – ФИНАЛЬНАЯ ВЕРСИЯ
+# 8. ФИЛЬТР СООБЩЕНИЙ ДЛЯ БИТРИКС24
 # ------------------------------------------------------------
 def call_bitrix(method, params={}):
-    """Вызов REST API Битрикс24 с токеном приложения и CLIENT_ID бота"""
     url = f"{BITRIX_REST_URL}/{method}?auth={BITRIX_APP_TOKEN}"
     if "CLIENT_ID" not in params:
         params["CLIENT_ID"] = BITRIX_CLIENT_ID
@@ -300,108 +301,52 @@ def is_technical_message(text):
 
 @app.route('/bitrix-filter', methods=['POST'])
 def bitrix_filter():
-    # Сохраняем сырое тело для диагностики
-    raw_body = request.get_data(as_text=True)
-    with open('/tmp/bitrix_body.log', 'a') as f:
-        f.write(f"=== {request.content_type} ===\n{raw_body}\n\n")
-
-    # Пробуем JSON
-    data = request.get_json(silent=True)
-    if data is None:
-        data = request.form.to_dict()
-
-    # Логируем в консоль
-    app.logger.info("=== BITRIX FILTER RECEIVED ===")
-    app.logger.info("Content-Type: %s", request.content_type)
-    app.logger.info("Data: %s", json.dumps(data, ensure_ascii=False))
-
-    # Если данные не получены, возвращаем ошибку с превью сырого тела
-    if not data:
-        return jsonify({
-            "status": "error",
-            "message": "No parseable data",
-            "content_type": request.content_type,
-            "raw_preview": raw_body[:200]
-        }), 400
-
-    # Извлекаем текст сообщения
-    text = ''
-    if 'data[message][text]' in data:
-        text = data['data[message][text]']
-    elif isinstance(data, dict):
-        message = data.get('message', {})
-        if isinstance(message, dict):
-            text = message.get('text', '')
-        else:
-            text = data.get('text', '')
-
-    # Извлекаем chat_id (внутренний ID открытой линии, если есть)
-    chat_id = ''
-    if isinstance(data, dict) and 'chat_id' in data:
-        chat_id = data['chat_id']
-    elif 'data[chat][id]' in data:
-        chat_id = data['data[chat][id]']
-    elif isinstance(data, dict) and 'chat' in data and isinstance(data['chat'], dict):
-        chat_id = data['chat'].get('id', '')
-    elif isinstance(data, dict) and 'data' in data and isinstance(data['data'], dict):
-        chat = data['data'].get('chat', {})
-        if isinstance(chat, dict):
-            chat_id = chat.get('id', '')
-
-    # Извлекаем user_id (альтернативный идентификатор для ChatApp)
-    user_id = ''
-    if isinstance(data, dict):
-        user_id = data.get('user_id', data.get('id_chat', ''))
-
-    # Извлекаем телефон (если передан)
-    phone = ''
-    if 'data[phone]' in data:
-        phone = data['data[phone]']
-    elif isinstance(data, dict):
-        phone = data.get('phone', data.get('client', {}).get('phone', ''))
-
-    # Если нет ни chat_id, ни user_id – возвращаем ошибку
-    if not chat_id and not user_id:
-        return jsonify({"status": "error", "message": "chat_id or user_id missing"}), 400
-
-    clean_phone = normalize_phone(phone)
-    contact_id = get_contact_by_phone(clean_phone) if clean_phone else None
-
-    active = False
-    if contact_id:
-        active = has_active_deals_or_leads(contact_id)
+    # Этот маршрут больше не нужен, но оставим для обратной совместимости
+    data = request.get_json(silent=True) or request.form.to_dict()
+    text = str(data.get('text', ''))
+    chat_id = str(data.get('chat_id', ''))
+    if not chat_id:
+        return jsonify({"status": "error", "message": "chat_id missing"}), 400
 
     is_tech = is_technical_message(text)
-
-    # --- Логика для вебхука Битрикс24 (управляем сессией) ---
-    if chat_id:
-        if contact_id and active:
-            transfer_to_operator(chat_id)
-            return jsonify({"status": "ok", "action": "open", "reason": "active_deals"})
-
-        if contact_id and not active:
-            if is_tech:
-                finish_session(chat_id)
-                return jsonify({"status": "ok", "action": "finish", "reason": "tech_no_active"})
-            else:
-                create_lead_and_attach(contact_id, clean_phone)
-                transfer_to_operator(chat_id)
-                return jsonify({"status": "ok", "action": "open", "lead_created": True})
-
-        # Нет контакта
-        if is_tech:
-            finish_session(chat_id)
-            return jsonify({"status": "ok", "action": "finish", "reason": "tech_no_contact"})
-        else:
-            transfer_to_operator(chat_id)
-            return jsonify({"status": "ok", "action": "open", "reason": "no_contact"})
-
-    # --- Логика для вызова из ChatApp (только анализируем) ---
     if is_tech:
-        return jsonify({"status": "ok", "action": "finish", "reason": "tech"})
+        finish_session(chat_id)
+        return jsonify({"status": "ok", "action": "finish"})
     else:
-        return jsonify({"status": "ok", "action": "open", "reason": "normal"})
+        transfer_to_operator(chat_id)
+        return jsonify({"status": "ok", "action": "open"})
 
 # ------------------------------------------------------------
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+# 9. FETCH-ОБРАБОТЧИК (универсальный, для всех линий)
+# ------------------------------------------------------------
+@app.route('/fetch-events', methods=['POST', 'GET'])
+def fetch_events():
+    """
+    Забирает накопленные события бота через imbot.v2.Event.get
+    и сразу применяет логику фильтрации.
+    Можно дёргать из GitHub Actions или сценария ChatApp.
+    """
+    params = {
+        "botId": BOT_ID,
+        "botToken": BOT_TOKEN,
+        "limit": 10
+    }
+    resp = call_bitrix("imbot.v2.Event.get", params)
+    events = resp.get("result", {}).get("events", [])
+
+    processed = 0
+    for event in events:
+        if event.get("type") == "ONIMBOTV2MESSAGEADD":
+            data = event.get("data", {})
+            text = data.get("message", {}).get("text", "")
+            chat_id = data.get("chat", {}).get("id", "")
+            if not chat_id:
+                continue
+            is_tech = is_technical_message(text)
+            if is_tech:
+                finish_session(chat_id)
+            else:
+                transfer_to_operator(chat_id)
+            processed += 1
+
+    return jsonify({"status": "ok", "processed": processed})
