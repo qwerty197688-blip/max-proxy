@@ -1,8 +1,6 @@
 from flask import Flask, request, jsonify
-from PIL import Image
 import requests
 import json
-import io
 
 app = Flask(__name__)
 
@@ -10,7 +8,7 @@ app = Flask(__name__)
 MAX_TOKEN = "f9LHodD0cOL6sWUqALeE0TV5VXVb6YSUZoNnbUt0sBRwEbz-36An-XyiP6rC959ZSEpEY7tpmjqrDZBe6ew8"
 MAX_API_URL = "https://platform-api.max.ru/messages"
 
-# Токен Telegram-бота (указан второй токен, при необходимости замените)
+# Токен Telegram-бота (FlorcatBot)
 TG_BOT_TOKEN = "5256656259:AAG1kdCp0eqps84AZLsD1PcrzxmXaDRMg04"
 TG_API_URL = f"https://api.telegram.org/bot{TG_BOT_TOKEN}"
 
@@ -42,7 +40,7 @@ def proxy_to_max():
     return jsonify(resp.json()), resp.status_code
 
 # ------------------------------------------------------------
-# 2. УНИВЕРСАЛЬНЫЙ ПРОКСИ ДЛЯ TELEGRAM (автоопределение метода + конвертация в JPEG)
+# 2. УНИВЕРСАЛЬНЫЙ ПРОКСИ ДЛЯ TELEGRAM (автоопределение метода, сырые фото)
 # ------------------------------------------------------------
 @app.route('/telegram', methods=['POST'])
 def proxy_telegram_auto():
@@ -81,13 +79,8 @@ def proxy_telegram_auto():
             try:
                 image_resp = requests.get(photo_url)
                 image_resp.raise_for_status()
-
-                # Определяем MIME-тип от сервера или используем запасной
                 content_type = image_resp.headers.get('Content-Type', 'application/octet-stream')
-                # Просто передаём сырые байты в Telegram
-                files = {
-                    'photo': ('image.png', image_resp.content, content_type)
-                }
+                files = {'photo': ('image.png', image_resp.content, content_type)}
                 data_payload = {
                     'chat_id': (None, chat_id),
                     'caption': (None, caption or ''),
@@ -95,7 +88,6 @@ def proxy_telegram_auto():
                 }
                 if reply_markup:
                     data_payload['reply_markup'] = (None, json.dumps(reply_markup))
-
                 resp = requests.post(f"{TG_API_URL}/sendPhoto", files=files, data=data_payload)
             except Exception as e:
                 return jsonify({'status': 'error', 'message': f'Failed to download or send photo: {e}'}), 500
@@ -192,7 +184,19 @@ def clean_user_id():
     return jsonify({'user_id': clean})
 
 # ------------------------------------------------------------
-# 6. HEALTH‑CHECK
+# 6. ПАРСИНГ DEEP LINK (извлечение start-параметра)
+# ------------------------------------------------------------
+@app.route('/parse-start', methods=['POST'])
+def parse_start():
+    data = request.get_json()
+    text = data.get('message', '')
+    source = 'organic'
+    if text.startswith('/start '):
+        source = text[7:].strip() or 'organic'
+    return jsonify({'lead_source': source})
+
+# ------------------------------------------------------------
+# 7. HEALTH‑CHECK
 # ------------------------------------------------------------
 @app.route('/health', methods=['GET'])
 def health():
