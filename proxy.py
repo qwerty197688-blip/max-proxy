@@ -306,13 +306,18 @@ def is_technical_message(text):
 @app.route('/fetch-events', methods=['POST', 'GET'])
 def fetch_events():
     global last_offset
+    # Временно принудительно начинаем с 0, чтобы забрать все непрочитанные события
     params = {
         "botId": BOT_ID,
         "botToken": BOT_TOKEN,
         "limit": 10,
-        "offset": last_offset
+        "offset": 0
     }
     resp = call_bitrix("imbot.v2.Event.get", params)
+
+    # Выводим всё в консоль для диагностики
+    print("=== FULL EVENT RESPONSE ===")
+    print(json.dumps(resp, ensure_ascii=False, indent=2))
 
     events = resp.get("result", {}).get("events", [])
     processed = 0
@@ -333,12 +338,10 @@ def fetch_events():
         contact_id = get_contact_by_phone(clean_phone) if clean_phone else None
         is_tech = is_technical_message(text)
 
-        # Диагностика
-        app.logger.info(f"TEXT: {text} | TECH: {is_tech} | CHAT_ID: {chat_id}")
+        print(f"TEXT: {text} | TECH: {is_tech} | CHAT_ID: {chat_id}")
 
         if is_tech:
-            result = finish_session(chat_id)
-            app.logger.info(f"FINISH RESULT: {result}")
+            finish_session(chat_id)
         else:
             if contact_id:
                 if has_active_deals_or_leads(contact_id):
@@ -350,6 +353,7 @@ def fetch_events():
                 transfer_to_operator(chat_id)
         processed += 1
 
+    # Обновляем offset на всякий случай
     if resp.get("result", {}).get("nextOffset"):
         last_offset = resp["result"]["nextOffset"]
 
