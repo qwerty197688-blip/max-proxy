@@ -17,14 +17,12 @@ REES46_SHOP_SECRET = "79dbfb33e1534843d0a3b0b3730b55a1"
 REES46_PROFILE_URL = "https://api.rees46.ru/profile"
 CRM_STATUS_URL_TEMPLATE = "https://crm.florcat.ru/ajax/getStatusLinks.php?order_id={order_id}"
 
-BITRIX_APP_TOKEN = "sza7gi6khrvx18cr0eipcb0z6puepwob"
+BITRIX_WEBHOOK = "b8c8m2bw9pzik7ep"
 BITRIX_CLIENT_ID = "q4s0wy624a1p99qwlta98lu3ih0fjgq7"
-BITRIX_REST_URL = "https://crm.florcat.ru/rest"
 
 BOT_ID = 164097
 BOT_TOKEN = "a7b3c9d4e5f6789012345678abcdef01"
 
-# Глобальная переменная для хранения offset'а между вызовами fetch-обработчика
 last_offset = 0
 
 # ------------------------------------------------------------
@@ -216,8 +214,10 @@ def health():
 # 8. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ БИТРИКС24
 # ------------------------------------------------------------
 def call_bitrix(method, params={}):
-    """Вызов REST API Битрикс24 с токеном приложения"""
-    url = f"{BITRIX_REST_URL}/{method}?auth={BITRIX_APP_TOKEN}"
+    """Вызов REST API через вебхук с обязательным botToken"""
+    url = f"https://crm.florcat.ru/rest/1/{BITRIX_WEBHOOK}/{method}"
+    if "botToken" not in params and BOT_TOKEN:
+        params["botToken"] = BOT_TOKEN
     resp = requests.post(url, json=params)
     return resp.json()
 
@@ -301,7 +301,7 @@ def is_technical_message(text):
     return False
 
 # ------------------------------------------------------------
-# 9. FETCH-ОБРАБОТЧИК (универсальный, для всех линий)
+# 9. FETCH-ОБРАБОТЧИК
 # ------------------------------------------------------------
 @app.route('/fetch-events', methods=['POST', 'GET'])
 def fetch_events():
@@ -310,36 +310,44 @@ def fetch_events():
         "botId": BOT_ID,
         "botToken": BOT_TOKEN,
         "limit": 10,
-        "offset": 0   # намеренно сбрасываем offset для диагностики
+        "offset": last_offset
     }
     resp = call_bitrix("imbot.v2.Event.get", params)
-    
-    # Собираем всю полезную информацию
-    result = {
-        "status": "ok",
-        "processed": 0,
-        "total_events": len(resp.get("result", {}).get("events", [])),
-        "nextOffset": resp.get("result", {}).get("nextOffset"),
-        "raw_response": resp   # <-- весь ответ Битрикс24
-    }
-    
-    # Обрабатываем события как обычно
+
     events = resp.get("result", {}).get("events", [])
+    processed = 0
+
     for event in events:
         if event.get("type") == "ONIMBOTV2MESSAGEADD":
             data = event.get("data", {})
             text = data.get("message", {}).get("text", "")
             chat_id = data.get("chat", {}).get("id", "")
-            if chat_id:
-                # сохраняем информацию о каждом сообщении
-                result.setdefault("messages", []).append({
-                    "text": text,
-                    "chat_id": chat_id,
-                    "is_tech": is_technical_message(text)
-                })
-                # Здесь же можно выполнять finish_session, но пока просто собираем данные
+            if not chat_id:
+                continue
 
-    return jsonify(result)
+            phone = data.get("user", {}).get("phones", {}).get("personal_mobile", "")
+            clean_phone = normalize_phone(phone)
+            contact_id = get_contact_by_phone(clean_phone) if clean_phone else None
+
+            is_tech = is_technical_message(text)
+
+            if is_tech:
+                finish_session(chat_id)
+            else:
+                if contact_id:
+                    if has_active_deals_or_leads(contact_id):
+                        transfer_to_operator(chat_id)
+                    else:
+                        create_lead_and_attach(contact_id, clean_phone)
+                        transfer_to_operator(chat_id)
+                else:
+                    transfer_to_operator(chat_id)
+            processed += 1
+
+    if resp.get("result", {}).get("nextOffset"):
+        last_offset = resp["result"]["nextOffset"]
+
+    return jsonify({"status": "ok", "processed": processed})
 
 # ------------------------------------------------------------
 if __name__ == '__main__':
