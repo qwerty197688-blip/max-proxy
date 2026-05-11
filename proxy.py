@@ -19,7 +19,7 @@ REES46_PROFILE_URL = "https://api.rees46.ru/profile"
 CRM_STATUS_URL_TEMPLATE = "https://crm.florcat.ru/ajax/getStatusLinks.php?order_id={order_id}"
 
 # Токен приложения Битрикс24 и CLIENT_ID бота-фильтра
-BITRIX_APP_TOKEN = "b9fp5vcfojoxdq2yl8a0r51gkgas7zz0"
+BITRIX_APP_TOKEN = "sza7gi6khrvx18cr0eipcb0z6puepwob"
 BITRIX_CLIENT_ID = "q4s0wy624a1p99qwlta98lu3ih0fjgq7"
 BITRIX_REST_URL = "https://crm.florcat.ru/rest"
 
@@ -334,6 +334,24 @@ def bitrix_filter():
     else:
         transfer_to_operator(chat_id)
         return jsonify({"status": "ok", "action": "open", "reason": "no_contact"})
+
+# ------------------------------------------------------------
+# ВРЕМЕННЫЙ МАРШРУТ ДЛЯ РЕГИСТРАЦИИ БОТА (удалить после использования)
+# ------------------------------------------------------------
+@app.route('/register-bot', methods=['GET'])
+def register_bot():
+    """Выполняет imbot.register с типом 'O' и возвращает BOT_ID"""
+    url = f"https://crm.florcat.ru/rest/imbot.register?auth={BITRIX_APP_TOKEN}"
+    payload = {
+        "CODE": "psclp15ijbn6g490",
+        "TYPE": "O",
+        "EVENT_MESSAGE_ADD": "https://max-proxy-aj6m.onrender.com/bitrix-filter",
+        "PROPERTIES": {
+            "NAME": "Фильтр сообщений"
+        }
+    }
+    resp = requests.post(url, json=payload)
+    return jsonify(resp.json())
 
 # ------------------------------------------------------------
 if __name__ == '__main__':
