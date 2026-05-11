@@ -2,8 +2,6 @@ from flask import Flask, request, jsonify
 import requests
 import json
 import re
-import threading
-import time
 
 app = Flask(__name__)
 
@@ -31,7 +29,6 @@ last_offset = 0
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ БИТРИКС24
 # ------------------------------------------------------------
 def call_bitrix(method, params={}):
-    """Вызов REST API через вебхук с обязательным botToken"""
     url = f"https://crm.florcat.ru/rest/1/{BITRIX_WEBHOOK}/{method}"
     if "botToken" not in params and BOT_TOKEN:
         params["botToken"] = BOT_TOKEN
@@ -117,8 +114,10 @@ def is_technical_message(text):
             return True
     return False
 
+# ------------------------------------------------------------
+# ОСНОВНАЯ ЛОГИКА ОБРАБОТКИ СОБЫТИЙ
+# ------------------------------------------------------------
 def process_events():
-    """Забирает события из Битрикс24 и обрабатывает их. Возвращает количество обработанных событий."""
     global last_offset
     params = {
         "botId": BOT_ID,
@@ -162,18 +161,6 @@ def process_events():
         last_offset = resp["result"]["nextOffset"]
 
     return processed
-
-def auto_fetch():
-    """Фоновая задача: каждые 10 секунд опрашивает события."""
-    print(">>> Auto-fetch thread started")
-    while True:
-        try:
-            processed = process_events()
-            if processed > 0:
-                print(f">>> Auto-fetch processed {processed} events")
-        except Exception as e:
-            print(f">>> Auto-fetch error: {e}")
-        time.sleep(10)
 
 # ------------------------------------------------------------
 # МАРШРУТЫ
@@ -349,6 +336,4 @@ def fetch_events_manual():
 
 # ------------------------------------------------------------
 if __name__ == '__main__':
-    # Запускаем фоновый поток автоопроса
-    threading.Thread(target=auto_fetch, daemon=True).start()
     app.run(host='0.0.0.0', port=5000)
