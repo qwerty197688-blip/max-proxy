@@ -209,7 +209,7 @@ def health():
     return jsonify({'status': 'ok'})
 
 # ------------------------------------------------------------
-# 8. ФИЛЬТР СООБЩЕНИЙ ДЛЯ БИТРИКС24 (БОТ-ФИЛЬТР)
+# 8. ФИЛЬТР СООБЩЕНИЙ ДЛЯ БИТРИКС24 (БОТ-ФИЛЬТР) – ИСПРАВЛЕННАЯ ВЕРСИЯ
 # ------------------------------------------------------------
 def call_bitrix(method, params={}):
     """Вызов REST API Битрикс24 с токеном приложения и CLIENT_ID бота"""
@@ -300,58 +300,44 @@ def is_technical_message(text):
 
 @app.route('/bitrix-filter', methods=['POST'])
 def bitrix_filter():
-    data = request.get_json()
-    message = data.get('message', data.get('data', {}).get('message', {}))
-    text = message.get('text', '') if isinstance(message, dict) else ''
-    chat_id = data.get('chat_id', data.get('data', {}).get('chat', {}).get('id', ''))
-    phone = data.get('phone', data.get('client', {}).get('phone', ''))
-
-    clean_phone = normalize_phone(phone)
-    contact_id = get_contact_by_phone(clean_phone) if clean_phone else None
-
-    active = False
-    if contact_id:
-        active = has_active_deals_or_leads(contact_id)
-
-    is_tech = is_technical_message(text)
-
-    if contact_id and active:
-        transfer_to_operator(chat_id)
-        return jsonify({"status": "ok", "action": "open", "reason": "active_deals"})
-
-    if contact_id and not active:
-        if is_tech:
-            finish_session(chat_id)
-            return jsonify({"status": "ok", "action": "finish", "reason": "tech_no_active"})
+    # Пробуем получить данные как JSON
+    data = request.get_json(silent=True)
+    if data is None:
+        # Если не JSON – пробуем form data
+        data = request.form.to_dict()
+    
+    # Логируем всё, что пришло, чтобы понять структуру
+    print("=== BITRIX FILTER RECEIVED ===")
+    print(request.content_type)
+    print(data)
+    
+    # Извлекаем текст и chat_id (зависит от реальной структуры)
+    text = ''
+    chat_id = ''
+    
+    # Если данные пришли как JSON
+    if isinstance(data, dict):
+        # Попробуем разные варианты
+        message = data.get('message', {})
+        if isinstance(message, dict):
+            text = message.get('text', '')
         else:
-            create_lead_and_attach(contact_id, clean_phone)
-            transfer_to_operator(chat_id)
-            return jsonify({"status": "ok", "action": "open", "lead_created": True})
-
-    if is_tech:
-        finish_session(chat_id)
-        return jsonify({"status": "ok", "action": "finish", "reason": "tech_no_contact"})
-    else:
-        transfer_to_operator(chat_id)
-        return jsonify({"status": "ok", "action": "open", "reason": "no_contact"})
-
-# ------------------------------------------------------------
-# ВРЕМЕННЫЙ МАРШРУТ ДЛЯ РЕГИСТРАЦИИ БОТА (удалить после использования)
-# ------------------------------------------------------------
-@app.route('/register-bot', methods=['GET'])
-def register_bot():
-    """Выполняет imbot.register с типом 'O' и возвращает BOT_ID"""
-    url = f"https://crm.florcat.ru/rest/imbot.register?auth={BITRIX_APP_TOKEN}"
-    payload = {
-        "CODE": "psclp15ijbn6g490",
-        "TYPE": "O",
-        "EVENT_MESSAGE_ADD": "https://max-proxy-aj6m.onrender.com/bitrix-filter",
-        "PROPERTIES": {
-            "NAME": "Фильтр сообщений"
-        }
-    }
-    resp = requests.post(url, json=payload)
-    return jsonify(resp.json())
+            text = data.get('text', '')
+        
+        chat = data.get('chat', data.get('data', {}).get('chat', {}))
+        if isinstance(chat, dict):
+            chat_id = chat.get('id', '')
+        else:
+            chat_id = data.get('chat_id', '')
+    
+    # Если text всё ещё пуст, попробуем извлечь из других полей формы
+    if not text:
+        text = data.get('data[message][text]', '')
+    if not chat_id:
+        chat_id = data.get('data[chat][id]', '')
+    
+    # Временный возврат, чтобы увидеть, что мы извлекли
+    return jsonify({"status": "debug", "text": text, "chat_id": chat_id})
 
 # ------------------------------------------------------------
 if __name__ == '__main__':
