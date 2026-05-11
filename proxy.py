@@ -21,7 +21,7 @@ BITRIX_APP_TOKEN = "sza7gi6khrvx18cr0eipcb0z6puepwob"
 BITRIX_CLIENT_ID = "q4s0wy624a1p99qwlta98lu3ih0fjgq7"
 BITRIX_REST_URL = "https://crm.florcat.ru/rest"
 
-# ID бота и его токен (используются для fetch-режима)
+# ID и токен бота (для fetch-режима)
 BOT_ID = 164097
 BOT_TOKEN = "a7b3c9d4e5f6789012345678abcdef01"
 
@@ -48,7 +48,7 @@ def proxy_to_max():
     return jsonify(resp.json()), resp.status_code
 
 # ------------------------------------------------------------
-# 2. УНИВЕРСАЛЬНЫЙ ПРОКСИ ДЛЯ TELEGRAM
+# 2. ПРОКСИ ДЛЯ TELEGRAM
 # ------------------------------------------------------------
 @app.route('/telegram', methods=['POST'])
 def proxy_telegram_auto():
@@ -192,7 +192,7 @@ def clean_user_id():
     return jsonify({'user_id': clean})
 
 # ------------------------------------------------------------
-# 6. ПАРСИНГ DEEP LINK
+# 6. ПАРСИНГ DEEP LINK (извлечение start-параметра)
 # ------------------------------------------------------------
 @app.route('/parse-start', methods=['POST'])
 def parse_start():
@@ -211,12 +211,11 @@ def health():
     return jsonify({'status': 'ok'})
 
 # ------------------------------------------------------------
-# 8. ФИЛЬТР СООБЩЕНИЙ ДЛЯ БИТРИКС24
+# 8. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ БИТРИКС24
 # ------------------------------------------------------------
 def call_bitrix(method, params={}):
+    """Вызов REST API Битрикс24 с токеном приложения"""
     url = f"{BITRIX_REST_URL}/{method}?auth={BITRIX_APP_TOKEN}"
-    if "CLIENT_ID" not in params:
-        params["CLIENT_ID"] = BITRIX_CLIENT_ID
     resp = requests.post(url, json=params)
     return resp.json()
 
@@ -299,23 +298,6 @@ def is_technical_message(text):
             return True
     return False
 
-@app.route('/bitrix-filter', methods=['POST'])
-def bitrix_filter():
-    # Этот маршрут больше не нужен, но оставим для обратной совместимости
-    data = request.get_json(silent=True) or request.form.to_dict()
-    text = str(data.get('text', ''))
-    chat_id = str(data.get('chat_id', ''))
-    if not chat_id:
-        return jsonify({"status": "error", "message": "chat_id missing"}), 400
-
-    is_tech = is_technical_message(text)
-    if is_tech:
-        finish_session(chat_id)
-        return jsonify({"status": "ok", "action": "finish"})
-    else:
-        transfer_to_operator(chat_id)
-        return jsonify({"status": "ok", "action": "open"})
-
 # ------------------------------------------------------------
 # 9. FETCH-ОБРАБОТЧИК (универсальный, для всех линий)
 # ------------------------------------------------------------
@@ -324,7 +306,7 @@ def fetch_events():
     """
     Забирает накопленные события бота через imbot.v2.Event.get
     и сразу применяет логику фильтрации.
-    Можно дёргать из GitHub Actions или сценария ChatApp.
+    Вызывается из GitHub Actions.
     """
     params = {
         "botId": BOT_ID,
@@ -350,3 +332,7 @@ def fetch_events():
             processed += 1
 
     return jsonify({"status": "ok", "processed": processed})
+
+# ------------------------------------------------------------
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
