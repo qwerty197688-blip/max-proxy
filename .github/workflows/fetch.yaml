@@ -1,0 +1,11 @@
+name: Fetch Bitrix Events
+on:
+  schedule:
+    - cron: '*/1 * * * *'   # каждую минуту
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call fetch-events
+        run: |
+          curl -X POST https://max-proxy-aj6m.onrender.com/fetch-events
