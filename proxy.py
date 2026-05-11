@@ -209,7 +209,7 @@ def health():
     return jsonify({'status': 'ok'})
 
 # ------------------------------------------------------------
-# 8. ФИЛЬТР СООБЩЕНИЙ ДЛЯ БИТРИКС24 (БОТ-ФИЛЬТР) – ИСПРАВЛЕННАЯ ВЕРСИЯ
+# 8. ФИЛЬТР СООБЩЕНИЙ ДЛЯ БИТРИКС24 (БОТ-ФИЛЬТР) – ФИНАЛЬНАЯ ВЕРСИЯ
 # ------------------------------------------------------------
 def call_bitrix(method, params={}):
     """Вызов REST API Битрикс24 с токеном приложения и CLIENT_ID бота"""
@@ -303,41 +303,77 @@ def bitrix_filter():
     # Пробуем получить данные как JSON
     data = request.get_json(silent=True)
     if data is None:
-        # Если не JSON – пробуем form data
+        # Если не JSON – берём form data
         data = request.form.to_dict()
-    
-    # Логируем всё, что пришло, чтобы понять структуру
-    print("=== BITRIX FILTER RECEIVED ===")
-    print(request.content_type)
-    print(data)
-    
-    # Извлекаем текст и chat_id (зависит от реальной структуры)
+
+    # Логируем для контроля
+    app.logger.info("=== BITRIX FILTER RECEIVED ===")
+    app.logger.info("Content-Type: %s", request.content_type)
+    app.logger.info("Data: %s", json.dumps(data, ensure_ascii=False))
+
+    # Извлекаем текст сообщения
     text = ''
-    chat_id = ''
-    
-    # Если данные пришли как JSON
-    if isinstance(data, dict):
-        # Попробуем разные варианты
+    if 'data[message][text]' in data:
+        text = data['data[message][text]']
+    elif isinstance(data, dict):
         message = data.get('message', {})
         if isinstance(message, dict):
             text = message.get('text', '')
         else:
             text = data.get('text', '')
-        
+
+    # Извлекаем chat_id
+    chat_id = ''
+    if 'data[chat][id]' in data:
+        chat_id = data['data[chat][id]']
+    elif isinstance(data, dict):
         chat = data.get('chat', data.get('data', {}).get('chat', {}))
         if isinstance(chat, dict):
             chat_id = chat.get('id', '')
         else:
             chat_id = data.get('chat_id', '')
-    
-    # Если text всё ещё пуст, попробуем извлечь из других полей формы
-    if not text:
-        text = data.get('data[message][text]', '')
+
+    # Извлекаем телефон (если передан)
+    phone = ''
+    if 'data[phone]' in data:
+        phone = data['data[phone]']
+    elif isinstance(data, dict):
+        phone = data.get('phone', data.get('client', {}).get('phone', ''))
+
+    # Если нет chat_id – просто выходим
     if not chat_id:
-        chat_id = data.get('data[chat][id]', '')
-    
-    # Временный возврат, чтобы увидеть, что мы извлекли
-    return jsonify({"status": "debug", "text": text, "chat_id": chat_id})
+        return jsonify({"status": "error", "message": "chat_id missing"}), 400
+
+    clean_phone = normalize_phone(phone)
+    contact_id = get_contact_by_phone(clean_phone) if clean_phone else None
+
+    active = False
+    if contact_id:
+        active = has_active_deals_or_leads(contact_id)
+
+    is_tech = is_technical_message(text)
+
+    # Применяем логику
+    if contact_id and active:
+        transfer_to_operator(chat_id)
+        return jsonify({"status": "ok", "action": "open", "reason": "active_deals"})
+
+    if contact_id and not active:
+        if is_tech:
+            finish_session(chat_id)
+            return jsonify({"status": "ok", "action": "finish", "reason": "tech_no_active"})
+        else:
+            create_lead_and_attach(contact_id, clean_phone)
+            transfer_to_operator(chat_id)
+            return jsonify({"status": "ok", "action": "open", "lead_created": True})
+
+    # Нет контакта
+    if is_tech:
+        finish_session(chat_id)
+        return jsonify({"status": "ok", "action": "finish", "reason": "tech_no_contact"})
+    else:
+        transfer_to_operator(chat_id)
+        return jsonify({"status": "ok", "action": "open", "reason": "no_contact"})
 
 # ------------------------------------------------------------
 if __name__ == '__main__':
