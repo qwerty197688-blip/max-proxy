@@ -306,58 +306,40 @@ def is_technical_message(text):
 @app.route('/fetch-events', methods=['POST', 'GET'])
 def fetch_events():
     global last_offset
-    # Временно принудительно начинаем с 0, чтобы забрать все непрочитанные события
     params = {
         "botId": BOT_ID,
         "botToken": BOT_TOKEN,
         "limit": 10,
-        "offset": 0
+        "offset": 0   # намеренно сбрасываем offset для диагностики
     }
     resp = call_bitrix("imbot.v2.Event.get", params)
-
-    # Выводим всё в консоль для диагностики
-    print("=== FULL EVENT RESPONSE ===")
-    print(json.dumps(resp, ensure_ascii=False, indent=2))
-
+    
+    # Собираем всю полезную информацию
+    result = {
+        "status": "ok",
+        "processed": 0,
+        "total_events": len(resp.get("result", {}).get("events", [])),
+        "nextOffset": resp.get("result", {}).get("nextOffset"),
+        "raw_response": resp   # <-- весь ответ Битрикс24
+    }
+    
+    # Обрабатываем события как обычно
     events = resp.get("result", {}).get("events", [])
-    processed = 0
-
     for event in events:
-        if event.get("type") != "ONIMBOTV2MESSAGEADD":
-            continue
+        if event.get("type") == "ONIMBOTV2MESSAGEADD":
+            data = event.get("data", {})
+            text = data.get("message", {}).get("text", "")
+            chat_id = data.get("chat", {}).get("id", "")
+            if chat_id:
+                # сохраняем информацию о каждом сообщении
+                result.setdefault("messages", []).append({
+                    "text": text,
+                    "chat_id": chat_id,
+                    "is_tech": is_technical_message(text)
+                })
+                # Здесь же можно выполнять finish_session, но пока просто собираем данные
 
-        data = event.get("data", {})
-        text = data.get("message", {}).get("text", "")
-        chat_id = data.get("chat", {}).get("id", "")
-
-        if not chat_id:
-            continue
-
-        phone = data.get("user", {}).get("phones", {}).get("personal_mobile", "")
-        clean_phone = normalize_phone(phone)
-        contact_id = get_contact_by_phone(clean_phone) if clean_phone else None
-        is_tech = is_technical_message(text)
-
-        print(f"TEXT: {text} | TECH: {is_tech} | CHAT_ID: {chat_id}")
-
-        if is_tech:
-            finish_session(chat_id)
-        else:
-            if contact_id:
-                if has_active_deals_or_leads(contact_id):
-                    transfer_to_operator(chat_id)
-                else:
-                    create_lead_and_attach(contact_id, clean_phone)
-                    transfer_to_operator(chat_id)
-            else:
-                transfer_to_operator(chat_id)
-        processed += 1
-
-    # Обновляем offset на всякий случай
-    if resp.get("result", {}).get("nextOffset"):
-        last_offset = resp["result"]["nextOffset"]
-
-    return jsonify({"status": "ok", "processed": processed})
+    return jsonify(result)
 
 # ------------------------------------------------------------
 if __name__ == '__main__':
