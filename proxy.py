@@ -18,8 +18,9 @@ REES46_SHOP_SECRET = "79dbfb33e1534843d0a3b0b3730b55a1"
 REES46_PROFILE_URL = "https://api.rees46.ru/profile"
 CRM_STATUS_URL_TEMPLATE = "https://crm.florcat.ru/ajax/getStatusLinks.php?order_id={order_id}"
 
-# Токен приложения Битрикс24 (для /bitrix-filter)
+# Токен приложения Битрикс24 и CLIENT_ID бота-фильтра
 BITRIX_APP_TOKEN = "b9fp5vcfojoxdq2yl8a0r51gkgas7zz0"
+BITRIX_CLIENT_ID = "q4s0wy624a1p99qwlta98lu3ih0fjgq7"
 BITRIX_REST_URL = "https://crm.florcat.ru/rest"
 
 # ------------------------------------------------------------
@@ -45,7 +46,7 @@ def proxy_to_max():
     return jsonify(resp.json()), resp.status_code
 
 # ------------------------------------------------------------
-# 2. УНИВЕРСАЛЬНЫЙ ПРОКСИ ДЛЯ TELEGRAM (автоопределение метода, сырые фото)
+# 2. УНИВЕРСАЛЬНЫЙ ПРОКСИ ДЛЯ TELEGRAM
 # ------------------------------------------------------------
 @app.route('/telegram', methods=['POST'])
 def proxy_telegram_auto():
@@ -211,8 +212,10 @@ def health():
 # 8. ФИЛЬТР СООБЩЕНИЙ ДЛЯ БИТРИКС24 (БОТ-ФИЛЬТР)
 # ------------------------------------------------------------
 def call_bitrix(method, params={}):
-    """Вызов метода REST API Битрикс24 через токен приложения"""
+    """Вызов REST API Битрикс24 с токеном приложения и CLIENT_ID бота"""
     url = f"{BITRIX_REST_URL}/{method}?auth={BITRIX_APP_TOKEN}"
+    if "CLIENT_ID" not in params:
+        params["CLIENT_ID"] = BITRIX_CLIENT_ID
     resp = requests.post(url, json=params)
     return resp.json()
 
@@ -239,7 +242,6 @@ def get_contact_by_phone(phone):
     return contacts[0]["ID"] if contacts else None
 
 def has_active_deals_or_leads(contact_id):
-    # Проверяем сделки (стадия не финальная)
     deals = call_bitrix("crm.deal.list", {
         "filter": {"CONTACT_ID": contact_id, "!STAGE_SEMANTIC_ID": "F"},
         "select": ["ID"]
@@ -247,7 +249,6 @@ def has_active_deals_or_leads(contact_id):
     if deals.get("result"):
         return True
 
-    # Проверяем лиды (статус не финальный)
     leads = call_bitrix("crm.lead.list", {
         "filter": {"CONTACT_ID": contact_id, "!STATUS_SEMANTIC_ID": "F"},
         "select": ["ID"]
@@ -256,16 +257,17 @@ def has_active_deals_or_leads(contact_id):
 
 def finish_session(chat_id):
     return call_bitrix("imopenlines.bot.session.finish", {
-        "CHAT_ID": chat_id
+        "CHAT_ID": chat_id,
+        "BOT_ID": BITRIX_CLIENT_ID
     })
 
 def transfer_to_operator(chat_id):
     return call_bitrix("imopenlines.bot.session.operator", {
-        "CHAT_ID": chat_id
+        "CHAT_ID": chat_id,
+        "BOT_ID": BITRIX_CLIENT_ID
     })
 
 def create_lead_and_attach(contact_id, phone, source="Telegram"):
-    """Создать лид и привязать к контакту"""
     lead = call_bitrix("crm.lead.add", {
         "fields": {
             "TITLE": f"Обращение из {source}",
@@ -299,7 +301,6 @@ def is_technical_message(text):
 @app.route('/bitrix-filter', methods=['POST'])
 def bitrix_filter():
     data = request.get_json()
-    # Пытаемся извлечь данные из разных форматов (чат-бот Битрикс24 / ChatApp)
     message = data.get('message', data.get('data', {}).get('message', {}))
     text = message.get('text', '') if isinstance(message, dict) else ''
     chat_id = data.get('chat_id', data.get('data', {}).get('chat', {}).get('id', ''))
@@ -314,7 +315,6 @@ def bitrix_filter():
 
     is_tech = is_technical_message(text)
 
-    # --- Логика принятия решений ---
     if contact_id and active:
         transfer_to_operator(chat_id)
         return jsonify({"status": "ok", "action": "open", "reason": "active_deals"})
@@ -328,7 +328,6 @@ def bitrix_filter():
             transfer_to_operator(chat_id)
             return jsonify({"status": "ok", "action": "open", "lead_created": True})
 
-    # Нет контакта (телефон не опознан или не передан)
     if is_tech:
         finish_session(chat_id)
         return jsonify({"status": "ok", "action": "finish", "reason": "tech_no_contact"})
