@@ -24,6 +24,9 @@ BITRIX_REST_URL = "https://crm.florcat.ru/rest"
 BOT_ID = 164097
 BOT_TOKEN = "a7b3c9d4e5f6789012345678abcdef01"
 
+# Глобальная переменная для хранения offset'а между вызовами fetch-обработчика
+last_offset = 0
+
 # ------------------------------------------------------------
 # 1. ПРОКСИ ДЛЯ MAX
 # ------------------------------------------------------------
@@ -306,61 +309,48 @@ def fetch_events():
     Забирает накопленные события бота через imbot.v2.Event.get
     и сразу применяет логику фильтрации.
     """
+    global last_offset
     params = {
         "botId": BOT_ID,
         "botToken": BOT_TOKEN,
-        "limit": 10
+        "limit": 10,
+        "offset": last_offset
     }
     resp = call_bitrix("imbot.v2.Event.get", params)
-
-    # Логируем ответ для отладки (можно убрать после проверки)
-    app.logger.info("=== EVENT.GET RESPONSE ===")
-    app.logger.info(json.dumps(resp, ensure_ascii=False))
 
     events = resp.get("result", {}).get("events", [])
     processed = 0
 
     for event in events:
-        # Обрабатываем только новые сообщения
-        if event.get("type") != "ONIMBOTV2MESSAGEADD":
-            continue
+        if event.get("type") == "ONIMBOTV2MESSAGEADD":
+            data = event.get("data", {})
+            text = data.get("message", {}).get("text", "")
+            chat_id = data.get("chat", {}).get("id", "")
+            if not chat_id:
+                continue
 
-        data = event.get("data", {})
-        text = data.get("message", {}).get("text", "")
-        chat_id = data.get("chat", {}).get("id", "")
+            phone = data.get("user", {}).get("phones", {}).get("personal_mobile", "")
+            clean_phone = normalize_phone(phone)
+            contact_id = get_contact_by_phone(clean_phone) if clean_phone else None
 
-        if not chat_id:
-            continue
+            is_tech = is_technical_message(text)
 
-        # Извлекаем телефон пользователя
-        phone = ""
-        user = data.get("user", {})
-        if user and "phones" in user:
-            phone = user["phones"].get("personal_mobile", "")
-
-        # Применяем логику фильтрации
-        clean_phone = normalize_phone(phone)
-        contact_id = get_contact_by_phone(clean_phone) if clean_phone else None
-
-        is_tech = is_technical_message(text)
-
-        if is_tech:
-            # Для технических сообщений всегда завершаем сессию
-            finish_session(chat_id)
-            processed += 1
-        else:
-            # Для обычных сообщений: если контакт найден и есть активные сделки/лиды – передаём оператору,
-            # иначе создаём лид и передаём оператору.
-            if contact_id:
-                if has_active_deals_or_leads(contact_id):
-                    transfer_to_operator(chat_id)
-                else:
-                    create_lead_and_attach(contact_id, clean_phone)
-                    transfer_to_operator(chat_id)
+            if is_tech:
+                finish_session(chat_id)
             else:
-                # Если контакта нет, просто передаём оператору (без создания лида)
-                transfer_to_operator(chat_id)
+                if contact_id:
+                    if has_active_deals_or_leads(contact_id):
+                        transfer_to_operator(chat_id)
+                    else:
+                        create_lead_and_attach(contact_id, clean_phone)
+                        transfer_to_operator(chat_id)
+                else:
+                    transfer_to_operator(chat_id)
             processed += 1
+
+    # Сохраняем offset для следующего вызова
+    if resp.get("result", {}).get("nextOffset"):
+        last_offset = resp["result"]["nextOffset"]
 
     return jsonify({"status": "ok", "processed": processed})
 
