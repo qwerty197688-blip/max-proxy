@@ -93,6 +93,7 @@ def create_lead_and_attach(contact_id, phone, source="Telegram"):
 def is_technical_message(text):
     if not text:
         return False
+    # Убрана фраза "❓ Соединить с оператором"
     tech_phrases = [
         "/start",
         "📱 Меню",
@@ -108,6 +109,29 @@ def is_technical_message(text):
         if text_clean == phrase:
             return True
     return False
+
+# ------------------------------------------------------------
+# НОВЫЕ ФУНКЦИИ ДЛЯ УПРАВЛЕНИЯ ОТВЕТСТВЕННЫМ ЛИДА
+# ------------------------------------------------------------
+def find_lead_by_chat_id(chat_id):
+    """Находит ID последнего лида, связанного с чатом открытой линии"""
+    result = call_bitrix("crm.lead.list", {
+        "filter": {"IMOL_CHAT_ID": chat_id},
+        "select": ["ID"],
+        "order": {"ID": "DESC"},
+        "limit": 1
+    })
+    leads = result.get("result", [])
+    return leads[0]["ID"] if leads else None
+
+def update_lead_responsible(lead_id):
+    """Снимает бота с роли ответственного — лид становится нераспределённым"""
+    return call_bitrix("crm.lead.update", {
+        "id": lead_id,
+        "fields": {
+            "ASSIGNED_BY_ID": ""  # Пустое значение снимет текущего ответственного
+        }
+    })
 
 # ------------------------------------------------------------
 # ОСНОВНАЯ ЛОГИКА ОБРАБОТКИ СОБЫТИЙ
@@ -136,7 +160,6 @@ def process_events():
         if not chat_id:
             continue
 
-        # Безопасно извлекаем телефон – только если user – словарь с phones
         phone = ""
         user = data.get("user")
         if isinstance(user, dict):
@@ -156,10 +179,14 @@ def process_events():
             detail["finish_result"] = finish_res
         else:
             transfer_to_operator(chat_id)
+            # Снимаем бота с роли ответственного
+            lead_id = find_lead_by_chat_id(chat_id)
+            if lead_id:
+                update_lead_responsible(lead_id)
             detail["action"] = "transfer"
-            if contact_id:
-                if not has_active_deals_or_leads(contact_id):
-                    create_lead_and_attach(contact_id, clean_phone)
+            if contact_id and not has_active_deals_or_leads(contact_id):
+                create_lead_and_attach(contact_id, clean_phone)
+                detail["lead_created"] = True
         details.append(detail)
         processed += 1
 
@@ -338,8 +365,16 @@ def health():
 
 @app.route('/fetch-events', methods=['POST', 'GET'])
 def fetch_events_manual():
-    processed, details = process_events()
-    return jsonify({"status": "ok", "processed": processed, "details": details})
+    try:
+        processed, details = process_events()
+        return jsonify({"status": "ok", "processed": processed, "details": details})
+    except Exception as e:
+        app.logger.error(f"fetch-events error: {e}", exc_info=True)
+        return jsonify({
+            "status": "error",
+            "message": str(e),
+            "processed": 0
+        }), 500
 
 @app.route('/bitrix-filter', methods=['POST'])
 def bitrix_filter_legacy():
@@ -354,6 +389,10 @@ def bitrix_filter_legacy():
         return jsonify({"status": "ok", "action": "finish"})
     else:
         transfer_to_operator(chat_id)
+        # Снимаем бота с роли ответственного
+        lead_id = find_lead_by_chat_id(chat_id)
+        if lead_id:
+            update_lead_responsible(lead_id)
         return jsonify({"status": "ok", "action": "open"})
 
 # ------------------------------------------------------------
