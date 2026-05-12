@@ -181,10 +181,7 @@ def proxy_to_max():
 
 @app.route('/telegram', methods=['POST'])
 def proxy_telegram_auto():
-    # Поддержка form-data
-    data = request.get_json(silent=True)
-    if data is None:
-        data = request.form.to_dict()
+    data = request.get_json(silent=True) or request.form.to_dict()
 
     method = data.get('method')
     photo_url = data.get('photo_url')
@@ -333,7 +330,6 @@ def fetch_events_manual():
     processed, details = process_events()
     return jsonify({"status": "ok", "processed": processed, "details": details})
 
-# Восстановленный маршрут для обратной совместимости
 @app.route('/bitrix-filter', methods=['POST'])
 def bitrix_filter_legacy():
     data = request.get_json(silent=True) or request.form.to_dict()
@@ -351,10 +347,4 @@ def bitrix_filter_legacy():
 
 # ------------------------------------------------------------
 if __name__ == '__main__':
-    print(">>> Initial event processing...")
-    processed, details = process_events()
-    print(f">>> Initially processed {processed} events")
-    if details:
-        for d in details:
-            print(f"    {d['text']} -> {d['action']} (chat {d['chat_id']})")
     app.run(host='0.0.0.0', port=5000)
