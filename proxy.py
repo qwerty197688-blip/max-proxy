@@ -28,7 +28,6 @@ last_offset = 0
 # ------------------------------------------------------------
 def call_bitrix(method, params={}):
     url = f"https://crm.florcat.ru/rest/1/{BITRIX_WEBHOOK}/{method}"
-    # Всегда добавляем botToken (он же CLIENT_ID для v2)
     if "CLIENT_ID" not in params and BOT_TOKEN:
         params["CLIENT_ID"] = BOT_TOKEN
     resp = requests.post(url, json=params)
@@ -126,7 +125,7 @@ def process_events():
 
     events = resp.get("result", {}).get("events", [])
     processed = 0
-    details = []  # Для диагностики
+    details = []
 
     for event in events:
         if event.get("type") == "ONIMBOTV2MESSAGEADD":
@@ -182,7 +181,11 @@ def proxy_to_max():
 
 @app.route('/telegram', methods=['POST'])
 def proxy_telegram_auto():
-    data = request.get_json()
+    # Поддержка form-data
+    data = request.get_json(silent=True)
+    if data is None:
+        data = request.form.to_dict()
+
     method = data.get('method')
     photo_url = data.get('photo_url')
     photo = data.get('photo')
@@ -330,9 +333,24 @@ def fetch_events_manual():
     processed, details = process_events()
     return jsonify({"status": "ok", "processed": processed, "details": details})
 
+# Восстановленный маршрут для обратной совместимости
+@app.route('/bitrix-filter', methods=['POST'])
+def bitrix_filter_legacy():
+    data = request.get_json(silent=True) or request.form.to_dict()
+    text = data.get('text', '')
+    chat_id = data.get('chat_id', '')
+    if not chat_id:
+        return jsonify({"status": "error", "message": "chat_id missing"}), 400
+    is_tech = is_technical_message(text)
+    if is_tech:
+        finish_session(chat_id)
+        return jsonify({"status": "ok", "action": "finish"})
+    else:
+        transfer_to_operator(chat_id)
+        return jsonify({"status": "ok", "action": "open"})
+
 # ------------------------------------------------------------
 if __name__ == '__main__':
-    # При старте сразу обрабатываем накопившиеся события
     print(">>> Initial event processing...")
     processed, details = process_events()
     print(f">>> Initially processed {processed} events")
