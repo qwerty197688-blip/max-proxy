@@ -79,21 +79,9 @@ def transfer_to_operator(chat_id):
         "CHAT_ID": chat_id
     })
 
-def create_lead_and_attach(contact_id, phone, source="Telegram"):
-    lead = call_bitrix("crm.lead.add", {
-        "fields": {
-            "TITLE": f"Обращение из {source}",
-            "CONTACT_ID": contact_id,
-            "SOURCE_ID": source,
-            "COMMENTS": f"Телефон: {phone}"
-        }
-    })
-    return lead.get("result")
-
 def is_technical_message(text):
     if not text:
         return False
-    # Убрана фраза "❓ Соединить с оператором"
     tech_phrases = [
         "/start",
         "📱 Меню",
@@ -129,7 +117,7 @@ def update_lead_responsible(lead_id):
     return call_bitrix("crm.lead.update", {
         "id": lead_id,
         "fields": {
-            "ASSIGNED_BY_ID": ""  # Пустое значение снимет текущего ответственного
+            "ASSIGNED_BY_ID": ""
         }
     })
 
@@ -184,9 +172,6 @@ def process_events():
             if lead_id:
                 update_lead_responsible(lead_id)
             detail["action"] = "transfer"
-            if contact_id and not has_active_deals_or_leads(contact_id):
-                create_lead_and_attach(contact_id, clean_phone)
-                detail["lead_created"] = True
         details.append(detail)
         processed += 1
 
@@ -389,7 +374,6 @@ def bitrix_filter_legacy():
         return jsonify({"status": "ok", "action": "finish"})
     else:
         transfer_to_operator(chat_id)
-        # Снимаем бота с роли ответственного
         lead_id = find_lead_by_chat_id(chat_id)
         if lead_id:
             update_lead_responsible(lead_id)
@@ -397,4 +381,7 @@ def bitrix_filter_legacy():
 
 # ------------------------------------------------------------
 if __name__ == '__main__':
+    print(">>> Initial event processing...")
+    processed, details = process_events()
+    print(f">>> Initially processed {processed} events")
     app.run(host='0.0.0.0', port=5000)
