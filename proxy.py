@@ -34,6 +34,7 @@ def call_bitrix(method, params={}):
     return resp.json()
 
 def normalize_phone(phone):
+    """Приводит номер к формату 7xxxxxxxxxx (только цифры)"""
     if not phone:
         return ''
     digits = re.sub(r'[^\d]', '', phone)
@@ -44,16 +45,47 @@ def normalize_phone(phone):
     return digits
 
 def get_contact_by_phone(phone):
-    clean = normalize_phone(phone)
+    """
+    Ищет контакт по номеру телефона. Сначала точное совпадение,
+    затем перебор популярных форматов.
+    """
+    if not phone:
+        return None
+
+    clean = normalize_phone(phone)   # например, 79531676677
     if not clean:
         return None
-    search_tail = clean[-10:]
+
+    # 1. Точное совпадение с +7 (самый надёжный способ)
     result = call_bitrix("crm.contact.list", {
-        "filter": {"%=PHONE": search_tail},
+        "filter": {"PHONE": "+" + clean},
         "select": ["ID"]
     })
     contacts = result.get("result", [])
-    return contacts[0]["ID"] if contacts else None
+    if contacts:
+        return contacts[0]["ID"]
+
+    # 2. Точное совпадение без +
+    result = call_bitrix("crm.contact.list", {
+        "filter": {"PHONE": clean},
+        "select": ["ID"]
+    })
+    contacts = result.get("result", [])
+    if contacts:
+        return contacts[0]["ID"]
+
+    # 3. Если не нашли, пробуем без кода страны (10 последних цифр)
+    if len(clean) >= 10:
+        tail = clean[-10:]
+        result = call_bitrix("crm.contact.list", {
+            "filter": {"PHONE": tail},
+            "select": ["ID"]
+        })
+        contacts = result.get("result", [])
+        if contacts:
+            return contacts[0]["ID"]
+
+    return None
 
 def has_active_deals_or_leads(contact_id):
     deals = call_bitrix("crm.deal.list", {
@@ -79,6 +111,24 @@ def transfer_to_operator(chat_id):
         "CHAT_ID": chat_id
     })
 
+def find_lead_by_chat_id(chat_id):
+    result = call_bitrix("crm.lead.list", {
+        "filter": {"IMOL_CHAT_ID": chat_id},
+        "select": ["ID"],
+        "order": {"ID": "DESC"},
+        "limit": 1
+    })
+    leads = result.get("result", [])
+    return leads[0]["ID"] if leads else None
+
+def update_lead_responsible(lead_id):
+    return call_bitrix("crm.lead.update", {
+        "id": lead_id,
+        "fields": {
+            "ASSIGNED_BY_ID": ""
+        }
+    })
+
 def is_technical_message(text):
     if not text:
         return False
@@ -97,29 +147,6 @@ def is_technical_message(text):
         if text_clean == phrase:
             return True
     return False
-
-# ------------------------------------------------------------
-# НОВЫЕ ФУНКЦИИ ДЛЯ УПРАВЛЕНИЯ ОТВЕТСТВЕННЫМ ЛИДА
-# ------------------------------------------------------------
-def find_lead_by_chat_id(chat_id):
-    """Находит ID последнего лида, связанного с чатом открытой линии"""
-    result = call_bitrix("crm.lead.list", {
-        "filter": {"IMOL_CHAT_ID": chat_id},
-        "select": ["ID"],
-        "order": {"ID": "DESC"},
-        "limit": 1
-    })
-    leads = result.get("result", [])
-    return leads[0]["ID"] if leads else None
-
-def update_lead_responsible(lead_id):
-    """Снимает бота с роли ответственного — лид становится нераспределённым"""
-    return call_bitrix("crm.lead.update", {
-        "id": lead_id,
-        "fields": {
-            "ASSIGNED_BY_ID": ""
-        }
-    })
 
 # ------------------------------------------------------------
 # ОСНОВНАЯ ЛОГИКА ОБРАБОТКИ СОБЫТИЙ
@@ -167,7 +194,7 @@ def process_events():
             detail["finish_result"] = finish_res
         else:
             transfer_to_operator(chat_id)
-            # Снимаем бота с роли ответственного
+            # Снимаем бота с ответственного
             lead_id = find_lead_by_chat_id(chat_id)
             if lead_id:
                 update_lead_responsible(lead_id)
