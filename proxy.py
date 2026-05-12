@@ -128,29 +128,41 @@ def process_events():
     details = []
 
     for event in events:
-        if event.get("type") == "ONIMBOTV2MESSAGEADD":
-            data = event.get("data", {})
-            text = data.get("message", {}).get("text", "")
-            chat_id = data.get("chat", {}).get("id", "")
-            if not chat_id:
-                continue
+        if event.get("type") != "ONIMBOTV2MESSAGEADD":
+            continue
 
-            phone = data.get("user", {}).get("phones", {}).get("personal_mobile", "")
-            clean_phone = normalize_phone(phone)
-            contact_id = get_contact_by_phone(clean_phone) if clean_phone else None
+        data = event.get("data", {})
+        text = data.get("message", {}).get("text", "")
+        chat_id = data.get("chat", {}).get("id", "")
+        if not chat_id:
+            continue
 
-            is_tech = is_technical_message(text)
+        # Безопасно извлекаем телефон – только если user – словарь с phones
+        phone = ""
+        user = data.get("user")
+        if isinstance(user, dict):
+            phones = user.get("phones")
+            if isinstance(phones, dict):
+                phone = phones.get("personal_mobile", "")
 
-            detail = {"text": text, "chat_id": chat_id, "is_tech": is_tech}
-            if is_tech:
-                finish_res = finish_session(chat_id)
-                detail["action"] = "finish"
-                detail["finish_result"] = finish_res
-            else:
-                transfer_to_operator(chat_id)
-                detail["action"] = "transfer"
-            details.append(detail)
-            processed += 1
+        clean_phone = normalize_phone(phone)
+        contact_id = get_contact_by_phone(clean_phone) if clean_phone else None
+
+        is_tech = is_technical_message(text)
+
+        detail = {"text": text, "chat_id": chat_id, "is_tech": is_tech}
+        if is_tech:
+            finish_res = finish_session(chat_id)
+            detail["action"] = "finish"
+            detail["finish_result"] = finish_res
+        else:
+            transfer_to_operator(chat_id)
+            detail["action"] = "transfer"
+            if contact_id:
+                if not has_active_deals_or_leads(contact_id):
+                    create_lead_and_attach(contact_id, clean_phone)
+        details.append(detail)
+        processed += 1
 
     if resp.get("result", {}).get("nextOffset"):
         last_offset = resp["result"]["nextOffset"]
